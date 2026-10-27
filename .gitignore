@@ -1,0 +1,5 @@
+# machine-local state
+strata-gui.settings.json
+strata-service.log
+strata-service.err.log
+.claude/
