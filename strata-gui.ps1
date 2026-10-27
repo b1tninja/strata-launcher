@@ -15,6 +15,8 @@ $SettingsPath = Join-Path $PSScriptRoot 'strata-gui.settings.json'
 $TempDir = Join-Path $env:TEMP 'strata-gui'
 $ThinkingLevels = @('none', 'low', 'medium', 'high', 'xhigh')
 $LoadTimeoutMinutes = 30
+# Tokens held back from the context Cline is told about - see Get-ClineContext.
+$ClineContextReserve = 4096
 $ServiceLog = Join-Path $PSScriptRoot 'strata-service.log'
 $ServiceErrLog = Join-Path $PSScriptRoot 'strata-service.err.log'
 
@@ -658,17 +660,56 @@ function Update-Health {
 }
 
 # ------------------------------------------------------------------------------------ Cline
+function Get-RowContext($Row) {
+    # The context this model can really serve, in tokens, or 0 when nothing says.
+    # Order of trust: the running server's own answer (it knows what its engine actually loaded,
+    # and it is the one that will refuse a prompt), then the --max-context override this GUI
+    # would start the server with, then the config's own --max-context. A lazy server that has
+    # never started its engine answers max_context 0 (#strata: reported_ctx), which is why this
+    # falls through to the config instead of trusting health alone.
+    $h = $script:health[$Row.Port]
+    if ($h -and $h.Context) { return [int64]$h.Context }
+    $ctx = $ui.CtxBox.Text.Trim()
+    if ($ctx -and $ctx -ne '(config)' -and $ctx -match '^\d+$') { return [int64]$ctx }
+    $c = Get-ArgValue $Row.Cfg.args '--max-context'
+    if ($c -and $c -match '^\d+$') { return [int64]$c }
+    return 0
+}
+
+function Get-ClineContext([int64]$Ctx) {
+    # The number Cline is told the window is: a little under what the server really has.
+    # Cline only compacts once its own estimate of the prompt reaches 0.9x this number, and a
+    # Strata server never truncates: a prompt that outgrows the engine is refused with a 400,
+    # and every request that follows with it - the session cannot recover on its own. Cline's
+    # estimate counts ~chars/4 and misses the ChatML template, the tool schemas and the image
+    # tokens the engine really counts, so it sits under the true number (it corrects itself with
+    # the reported prompt_tokens, but only after the first oversized request). The reserve covers
+    # that error, the server's own CTX_SLACK (8) and the answer's room. The launcher runs the same
+    # formula on the number it is handed (tests\context-tests.ps1 keeps the two in step) and the
+    # status bar shows both numbers when Cline opens.
+    if ($Ctx -le 0) { return 0 }
+    $half = [int64][Math]::Max(1024, [int][Math]::Ceiling($Ctx * 0.5))
+    return [Math]::Max($half, $Ctx - [int64]$ClineContextReserve)
+}
+
 function Start-Cline($Row) {
     $launcher = Clean-Path $ui.ClineScriptBox.Text
     $folder = Clean-Path $ui.FolderBox.Text
-    $h = $script:health[$Row.Port]
-    $ctx = if ($h -and $h.Context) { $h.Context } else { 262144 }
+    # The context comes from what this model really serves - never from a guess. A context bigger
+    # than the engine's is worse than a small one: Cline keeps the conversation until 0.9 of the
+    # window it was given, the server never truncates, so the first prompt over the engine's
+    # window is the last one that answers (a 262144 default here stuck a 131072 model that way).
+    $raw = Get-RowContext $Row
+    if ($raw -le 0) {
+        Set-Status "Cannot tell $($Row.Model)'s context: no --max-context in its config and the server does not say. Cline was not opened."
+        return
+    }
     $clArgs = "-NoExit -STA -ExecutionPolicy Bypass -File $(QPath $launcher) -Folder $(QPath $folder) -Model `"$($Row.Model)`" " +
-        "-StrataBase `"$(Get-BaseUrl $Row)`" -Context $ctx -StrataRoot $(QPath (Get-Root))"
+        "-StrataBase `"$(Get-BaseUrl $Row)`" -Context $raw -StrataRoot $(QPath (Get-Root))"
     $thinking = [string]$ui.ThinkingBox.SelectedItem
     if ($ThinkingLevels -contains $thinking) { $clArgs += " -Thinking $thinking" }
     Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $clArgs -WorkingDirectory $folder
-    Set-Status "Opened Cline in $folder on $($Row.Model)."
+    Set-Status ("Opened Cline in $folder on $($Row.Model): Cline's context {0:n0}, the server has {1:n0} tokens." -f (Get-ClineContext $raw), $raw)
 }
 
 # ------------------------------------------------------------------------------------ benchmark

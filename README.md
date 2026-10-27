@@ -50,5 +50,25 @@ Settings (folder paths, Cline launcher, last selection, …) persist to
   the closing quote (this needs `QPath` — see the comment by its definition).
 - The GUI only ever stops servers it recognizes (its own, or a `/health` answer matching the
   config's model); a port taken by anything else is reported, never killed.
+- **Open Cline** hands Cline the context the model really has — the running server's `/health`
+  `max_context`, else the `--max-context` this GUI would launch with, else the config's — and
+  refuses to open rather than guess. The launcher then clamps that to what the server reports and
+  holds 4096 tokens back (both are `Get-ClineContext`), and writes the result into Cline's
+  `models.json`, `providers.json` and legacy `globalState.json` *every* time, not only when the
+  model is first registered — Cline re-imports `globalState.json` into its settings whenever it
+  starts, so a stale window left there quietly undoes the other two (seen on a real machine: the
+  number went straight back to 262144 on the next Cline run).
+  Why so strict: an agent only compacts against the window it was told. Cline compacts at 0.9 of
+  the number in its model entry, and since cline/cline#14867 it skips automatic compaction
+  altogether for a custom model that declares no limit — so a model with no number just keeps
+  growing. A Strata server never truncates: a prompt past the engine's window gets
+  `400 ... leaves no room to answer`, and so does every request after it. Cline does recognise that
+  reply and compacts and retries when there is history to compact; what it cannot come back from is
+  a first request whose system prompt, tools and input are already too large. A guessed or stale
+  number (the old 262144 default, or the same value parked in `globalState.json`, which Cline
+  re-imports into `providers.json`) is therefore the one setting that cannot be too high.
+- `tests\context-tests.ps1` checks that logic (it pulls the functions out of both scripts with the
+  AST and drives them with stubs, so no GUI, no server and no Cline settings are touched):
+  `powershell -NoProfile -ExecutionPolicy Bypass -File tests\context-tests.ps1`.
 - Requires Windows PowerShell 5.1 (ships with Windows) — WPF comes from .NET Framework; no
   install step.
