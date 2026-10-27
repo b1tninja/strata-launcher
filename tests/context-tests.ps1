@@ -23,7 +23,8 @@ function Assert-Is($Got, $Want, [string]$What) {
 }
 
 # ---------------------------------------------------------------- cline-strata.ps1
-$launcher = 'D:\code\cline-strata.ps1'
+$launcher = Join-Path (Split-Path -Parent $PSScriptRoot) 'cline-strata.ps1'
+if (-not (Test-Path -LiteralPath $launcher)) { throw "launcher not found next to the GUI: $launcher" }
 Invoke-Expression (Get-FunctionText $launcher @('Get-ClineContext'))
 Invoke-Expression (Get-FunctionText $launcher @('Resolve-ClineContext'))
 $ContextReserve = 4096

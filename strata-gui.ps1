@@ -64,7 +64,7 @@ Add-Type -AssemblyName System.Net.Http
 # ------------------------------------------------------------------------------------ settings
 $defaults = [ordered]@{
     StrataRoot    = 'M:\GITHUB\niko1221\strata'
-    ClineScript   = 'D:\code\cline-strata.ps1'
+    ClineScript   = (Join-Path $PSScriptRoot 'cline-strata.ps1')
     ClineFolder   = 'D:\code'
     Thinking      = ''
     Context       = ''
@@ -695,6 +695,10 @@ function Get-ClineContext([int64]$Ctx) {
 function Start-Cline($Row) {
     $launcher = Clean-Path $ui.ClineScriptBox.Text
     $folder = Clean-Path $ui.FolderBox.Text
+    if (-not (Test-Path -LiteralPath $launcher)) {
+        Set-Status "Cline launcher not found: $launcher - pick another in the Cline launcher box."
+        return
+    }
     # The context comes from what this model really serves - never from a guess. A context bigger
     # than the engine's is worse than a small one: Cline keeps the conversation until 0.9 of the
     # window it was given, the server never truncates, so the first prompt over the engine's

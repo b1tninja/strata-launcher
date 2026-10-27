@@ -22,9 +22,9 @@ It expects a Strata checkout that has already been set up (i.e. it has `.venv`, 
   (its own console window), open its web page, open its log/config. Optional per-launch overrides
   for `--max-context` and extra engine args — a patched config is written to `%TEMP%\strata-gui`,
   your config files are never modified. Optionally unloads Ollama models first to free VRAM.
-  **Open Cline** waits until the model is loaded, then starts your Cline launcher script
-  (`cline-strata.ps1`-style, taking `-Folder -Model -StrataBase -Context -StrataRoot [-Thinking]`)
-  pointed at this server.
+  **Open Cline** waits until the model is loaded, then starts `cline-strata.ps1` — the launcher
+  that ships beside the GUI, taking `-Folder -Model -StrataBase -Context -StrataRoot [-Thinking]` —
+  pointed at this server. Any script with that interface works; the path is a setting.
 - **Benchmark** — runs `tools\strata_bench.py` against one or several selected models, one after
   another (starting their servers as needed, stopping them when done). Live output in the window.
 - **Results** — lists the folders in `bench\results`, shows a table of medians (decode tok/s,
