@@ -42,6 +42,22 @@ It expects a Strata checkout that has already been set up (i.e. it has `.venv`, 
   quant, download size, disk need and RAM need against *this* PC (free space on the data drive,
   RAM, GPU), colour-coded green/yellow/red. "Install with setup..." opens `START-HERE.bat`
   pre-filled with that family/model.
+- **Config** — an editor for the selected `strata-*.json` (Launch's **Open config** opens it here):
+  - *Model and server*: `model_name`, `port`, `host`, `api_key`, `gpu`, then every setting Strata's
+    own Settings page edits, read from the checkout's `serve\runconfig.py` with its help text.
+  - *Engine*: the common engine flags with their own controls and help (context — which sets rope
+    scaling the way the Launch override does — KV format and streaming, VRAM reserve, expert cache,
+    prefill, speculative decoding, batching, caches, CPU threads).
+  - *Files*: the engine, tokenizer and model paths with a browse button and a mark when one is missing.
+  - *Other arguments*: every remaining engine flag as an editable Flag/Value table.
+  - *JSON*: the file as Save would write it; edit it and load it back into the form.
+  The changes are listed live and checked before saving (ranges, choices, no `host` beyond this PC
+  without an `api_key`, no context past 262,144 without rope scaling, no `lazy_load` with images).
+  Save confirms the list, keeps the previous file as `<name>.bak` and writes through Strata's
+  `runconfig.save` (atomic replace, Strata's own format). **Save as new...** creates another
+  `strata-<name>.json` — e.g. a 256K variant beside the original.
+- Logs and benchmark reports open in a built-in viewer (with Follow for a live log); config files
+  open in their default app. Nothing relies on Notepad, which can be a broken stub on Windows 11.
 - **Service** — installs a per-user scheduled task that runs one config on demand, hidden:
   the server starts with `--lazy` (doesn't load the model), the first request loads it, and it
   unloads after N idle minutes (`--idle-unload`) so VRAM is free while nothing uses it. The GUI

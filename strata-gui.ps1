@@ -387,6 +387,64 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
             <TextBlock x:Name="SvcStatus" TextWrapping="Wrap" FontFamily="Consolas" FontSize="12"/>
           </StackPanel>
         </TabItem>
+
+        <TabItem Header="  Config  " x:Name="ConfigTab">
+          <DockPanel Margin="8">
+            <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+              <WrapPanel DockPanel.Dock="Right">
+                <Button x:Name="CfgSaveBtn" Content="Save" FontWeight="SemiBold"/>
+                <Button x:Name="CfgRevertBtn" Content="Revert"/>
+                <Button x:Name="CfgSaveAsBtn" Content="Save as new..."/>
+                <Button x:Name="CfgFileBtn" Content="Open file"/>
+                <Button x:Name="CfgFolderBtn" Content="Open folder" Margin="0"/>
+              </WrapPanel>
+              <TextBlock x:Name="CfgTitle" VerticalAlignment="Center" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+            </DockPanel>
+            <TextBlock DockPanel.Dock="Bottom" x:Name="CfgChanges" TextWrapping="Wrap" Margin="0,6,0,0" MaxHeight="60" Foreground="#FF444444"/>
+            <TabControl x:Name="CfgTabs">
+              <TabItem Header="Model and server">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="CfgServerPanel" Margin="6"/></ScrollViewer>
+              </TabItem>
+              <TabItem Header="Engine">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="CfgEnginePanel" Margin="6"/></ScrollViewer>
+              </TabItem>
+              <TabItem Header="Files">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="CfgFilesPanel" Margin="6"/></ScrollViewer>
+              </TabItem>
+              <TabItem Header="Other arguments">
+                <DockPanel Margin="6">
+                  <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <WrapPanel DockPanel.Dock="Right">
+                      <Button x:Name="CfgArgAddBtn" Content="Add"/>
+                      <Button x:Name="CfgArgDelBtn" Content="Remove" Margin="0"/>
+                    </WrapPanel>
+                    <TextBlock TextWrapping="Wrap" VerticalAlignment="Center" Foreground="#FF444444"
+                               Text="Engine arguments without their own control. Leave Value empty for a switch (a flag that takes no value). The engine's --help lists them all."/>
+                  </DockPanel>
+                  <DataGrid x:Name="CfgArgsGrid" AutoGenerateColumns="False" CanUserAddRows="False" HeadersVisibility="Column"
+                            SelectionMode="Single" GridLinesVisibility="Horizontal">
+                    <DataGrid.Columns>
+                      <DataGridTextColumn Header="Flag" Width="240" Binding="{Binding Flag, UpdateSourceTrigger=PropertyChanged}"/>
+                      <DataGridTextColumn Header="Value" Width="*" Binding="{Binding Value, UpdateSourceTrigger=PropertyChanged}"/>
+                    </DataGrid.Columns>
+                  </DataGrid>
+                </DockPanel>
+              </TabItem>
+              <TabItem Header="JSON">
+                <DockPanel Margin="6">
+                  <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <Button x:Name="CfgJsonApplyBtn" DockPanel.Dock="Right" Content="Load this into the form" Margin="0"/>
+                    <TextBlock VerticalAlignment="Center" TextWrapping="Wrap" Foreground="#FF444444"
+                               Text="The config as Save would write it. Edit it here for anything the form does not cover, then load it into the form."/>
+                  </DockPanel>
+                  <TextBox x:Name="CfgJson" Height="Auto" VerticalContentAlignment="Top" FontFamily="Consolas" FontSize="12"
+                           AcceptsReturn="True" AcceptsTab="True" TextWrapping="NoWrap"
+                           VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+                </DockPanel>
+              </TabItem>
+            </TabControl>
+          </DockPanel>
+        </TabItem>
       </TabControl>
     </Grid>
   </DockPanel>
@@ -1225,6 +1283,617 @@ function Update-ServicePicker {
     if (-not $ui.SvcModelBox.SelectedItem -and $script:configs.Count -gt 0) { $ui.SvcModelBox.SelectedIndex = 0 }
 }
 
+# ------------------------------------------------------------------------------------ files and logs
+function Open-External([string]$Path) {
+    # The file's default app. Notepad is not a safe fallback: Windows 11 can have its Store stub
+    # without the app behind it ("The application cannot be started"), so say what failed instead.
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { Set-Status "Not found: $Path"; return }
+    try { Start-Process -FilePath $Path -ErrorAction Stop }
+    catch { Set-Status "Windows could not open $Path ($($_.Exception.Message)). Set a default app for $([IO.Path]::GetExtension($Path)) files." }
+}
+
+function Show-TextWindow([string]$Path, [string]$Title) {
+    # A read-only viewer for logs and reports, so they open whatever app Windows has for .log/.md.
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { Set-Status "Not found: $Path"; return }
+    [xml]$x = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Height="640" Width="980" WindowStartupLocation="CenterOwner" FontFamily="Segoe UI" FontSize="13">
+  <DockPanel Margin="10">
+    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+      <WrapPanel DockPanel.Dock="Right">
+        <CheckBox x:Name="Follow" Content="Follow" VerticalAlignment="Center" Margin="0,0,12,0"/>
+        <Button x:Name="Reload" Content="Reload" Padding="12,4" Margin="0,0,8,0"/>
+        <Button x:Name="Ext" Content="Open in its app" Padding="12,4"/>
+      </WrapPanel>
+      <TextBlock x:Name="PathText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+    </DockPanel>
+    <TextBox x:Name="Body" IsReadOnly="True" FontFamily="Consolas" FontSize="12" TextWrapping="NoWrap"
+             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+  </DockPanel>
+</Window>
+'@
+    $w = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $x))
+    $w.Owner = $window
+    $w.Title = $Title
+    $body = $w.FindName('Body')
+    $w.FindName('PathText').Text = $Path
+    $load = {
+        # The last 2 MB at most: engine logs grow without bound.
+        $fs = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
+        try {
+            $skip = [Math]::Max(0L, $fs.Length - 2MB)
+            $null = $fs.Seek($skip, 'Begin')
+            $text = (New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8)).ReadToEnd()
+        } finally { $fs.Dispose() }
+        if ($skip -gt 0) { $text = "[... the first $([int]($skip / 1MB)) MB are not shown ...]`r`n" + $text }
+        $body.Text = $text -replace "(?<!`r)`n", "`r`n"
+        $body.ScrollToEnd()
+    }.GetNewClosure()
+    & $load
+    $w.FindName('Reload').Add_Click($load)
+    $ext = $w.FindName('Ext'); $ext.Tag = $Path
+    $ext.Add_Click({ param($s, $a) Open-External $s.Tag })
+    $t = New-Object System.Windows.Threading.DispatcherTimer
+    $t.Interval = [TimeSpan]::FromSeconds(2)
+    $follow = $w.FindName('Follow')
+    $t.Add_Tick({ if ($follow.IsChecked) { & $load } }.GetNewClosure())
+    $t.Start()
+    $w.Add_Closed({ $t.Stop() }.GetNewClosure())
+    $w.Show()
+}
+
+# ------------------------------------------------------------------------------------ config editor
+# Server settings come from Strata's own serve\runconfig.py (the list its web page edits, with the
+# same checks), saving goes through its runconfig.save (the earlier file kept as <name>.bak, the new
+# one moved into place whole). Engine flags with a control are curated from `strata.exe --help`;
+# every other argument stays as it is in the Other arguments table.
+$ConfigPy = @'
+import json, sys
+sys.path.insert(0, sys.argv[2])
+import runconfig as R
+if sys.argv[1] == "schema":
+    out = []
+    for key, kind, help_ in R.EDITABLE:
+        k = kind[0] if isinstance(kind, tuple) else kind
+        if k == "arg":
+            continue                      # engine flags are edited on the Engine tab
+        out.append({"key": key, "kind": kind[1] if k == "sampling" else k,
+                    "choices": kind[1] if k == "enum" else None, "help": help_})
+    print(json.dumps(out))
+elif sys.argv[1] == "save":
+    cfg = json.loads(open(sys.argv[4], encoding="utf-8-sig").read())
+    print(R.save(sys.argv[3], cfg))
+'@
+
+# (flag, kind, choices or range, help). Kinds: int / num (with min..max), enum, auto (a word or a whole number),
+# switch (no value), ctx (the context, which also drives rope scaling).
+$EngineFlags = @(
+    @{ Flag = '--max-context'; Kind = 'ctx'; Help = 'Tokens of context the engine holds. Up to the trained 262,144 no rope scaling is needed; past it set rope scaling below (yarn; experimental in Strata). Each token costs ~13.7 KB of KV cache at int8.' }
+    @{ Flag = '--rope-scaling'; Kind = 'enum'; Choices = @('none', 'linear', 'yarn'); Help = 'Only for a context past 262,144: yarn is what Strata recommends. Fixed for the run; within the trained range it changes the model slightly at every position.' }
+    @{ Flag = '--rope-scale'; Kind = 'num'; Min = 1; Max = 64; Help = 'The extension factor: context / 262,144 (1.5 at 384K, 2 at 512K, 4 at 1M). Set automatically with the context.' }
+    @{ Flag = '--kv'; Kind = 'enum'; Choices = @('fp16', 'int8', 'k8v4', 'q4_0'); Help = 'KV cache format. int8: setup''s default. k8v4: 23% less memory, close to int8. q4_0: half of int8, measurably less precise on long documents.' }
+    @{ Flag = '--kv-resident'; Kind = 'int'; Min = 0; Help = 'KV streaming: cells of each attention layer kept in VRAM (at least 20480; 0 = all in VRAM). The rest lives in pinned RAM and the freed VRAM holds more experts. Setup writes 32768 from 64K up.' }
+    @{ Flag = '--kv-grow'; Kind = 'switch'; Help = 'Allocate KV VRAM only as the context is reached, lending the rest to the expert cache (one GPU, needs --expert-profile).' }
+    @{ Flag = '--vram-reserve-mib'; Kind = 'int'; Min = 0; Help = 'GPU memory (MiB) the engine leaves free for other programs (engine default 700). Raise it when the engine log says VRAM is LOW.' }
+    @{ Flag = '--expert-cache'; Kind = 'auto'; Choices = @('auto'); Help = 'Expert blobs kept in VRAM: auto (as many as fit) or a number.' }
+    @{ Flag = '--resident-budget-gib'; Kind = 'num'; Min = 1; Help = 'Unsloth / NVFP4 files: GiB of experts kept in RAM; the rest is read from the SSD.' }
+    @{ Flag = '--prefill'; Kind = 'auto'; Choices = @('auto', 'auto:16384', 'auto:32768'); Help = 'Prompt reading in chunks of this many tokens: auto (the largest up to 8192 that fits), auto:16384 / auto:32768 to allow bigger, or a number.' }
+    @{ Flag = '--spec'; Kind = 'int'; Min = 1; Max = 8; Help = 'Speculative decoding: tokens the draft layer proposes per check (setup writes 4).' }
+    @{ Flag = '--spec-min-p'; Kind = 'num'; Min = 0; Max = 1; Help = 'How sure the draft layer must be to extend a window (setup writes 0.5).' }
+    @{ Flag = '--batch'; Kind = 'int'; Min = 2; Max = 8; Help = 'Serve up to N requests at once (each slot takes VRAM like the main session). Empty: one at a time.' }
+    @{ Flag = '--batch-mtp'; Kind = 'switch'; Help = 'With --batch: each slot also verifies a draft (needs --spec and --mtp).' }
+    @{ Flag = '--prompt-cache'; Kind = 'int'; Min = 0; Help = 'Conversation checkpoints kept between requests (default 6, ~118 MB of RAM each; 0 = re-read every prompt).' }
+    @{ Flag = '--conversation-cache-mib'; Kind = 'int'; Min = 0; Help = 'RAM for parked conversations, so switching between chats does not re-read them (default 0 = off).' }
+    @{ Flag = '--pool-workers'; Kind = 'int'; Min = 0; Help = 'CPU expert threads (default 0 = every physical core but one).' }
+    @{ Flag = '--pool-affinity'; Kind = 'enum'; Choices = @('all', 'auto', 'p-cores', 'measure'); Help = 'Where the CPU expert threads run: all (one per physical core), auto / p-cores for hybrid Intel CPUs, measure (time both at start).' }
+    @{ Flag = '--host-core'; Kind = 'enum'; Choices = @('first', 'last', 'sibling'); Help = 'Core of the engine''s host thread; last or sibling keeps it away from the GPU interrupts on core 0.' }
+)
+$FileFlags = @(
+    @{ Flag = '--pack'; Dir = $true; Help = 'The pack folder (experts and tokenizer).' }
+    @{ Flag = '--native'; Help = 'The model''s first GGUF shard.' }
+    @{ Flag = '--ple-gguf'; Help = 'The shard with the n-gram (PLE) table. Without it the model silently computes something else.' }
+    @{ Flag = '--embd-gguf'; Help = 'The token embedding GGUF (NVFP4 packs).' }
+    @{ Flag = '--mtp'; Dir = $true; Help = 'The draft layer folder for speculative decoding.' }
+    @{ Flag = '--expert-profile'; Help = 'Which experts start in VRAM (setup''s profile).' }
+)
+$TopFiles = @(
+    @{ Key = 'exe'; Help = 'The engine executable.' }
+    @{ Key = 'tokenizer'; Dir = $true; Help = 'The tokenizer folder.' }
+    @{ Key = 'cwd'; Dir = $true; Help = 'The engine''s working folder.' }
+    @{ Key = 'log'; NoCheck = $true; Help = 'The engine log (created when the engine starts).' }
+)
+$script:cfgSchema = $null
+$script:cfgEdit = $null
+$script:cfgLoading = $false
+Add-Type -TypeDefinition 'public class StrataCfgArg { public string Flag { get; set; } public string Value { get; set; } }'
+$script:cfgArgs = New-Object System.Collections.ObjectModel.ObservableCollection[object]
+$script:cfgPending = $null
+$ui.CfgArgsGrid.ItemsSource = $script:cfgArgs
+
+function Get-ConfigSchema {
+    if ($script:cfgSchema) { return $script:cfgSchema }
+    $py = Get-Python
+    if ($py) {
+        if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
+        $file = Join-Path $TempDir 'runconfig-gui.py'
+        Set-Content -LiteralPath $file -Value $ConfigPy -Encoding ascii
+        try { $script:cfgSchema = @(& $py -I $file schema (Join-Path (Get-Root) 'serve') 2>$null | Out-String | ConvertFrom-Json) } catch {}
+    }
+    if (-not $script:cfgSchema) {
+        # An older Strata without runconfig.py: the few keys every version reads.
+        $script:cfgSchema = @(
+            [pscustomobject]@{ key = 'fit_max_tokens'; kind = 'bool'; choices = $null; help = 'Shorten a max_tokens that does not fit the context instead of answering 400' }
+            [pscustomobject]@{ key = 'idle_unload_s'; kind = 'num>=0'; choices = $null; help = 'Unload the model after this many seconds without requests' }
+            [pscustomobject]@{ key = 'lazy_load'; kind = 'bool'; choices = $null; help = 'Start without loading the model; the first request loads it' }
+        )
+    }
+    return $script:cfgSchema
+}
+
+function Split-ArgEntries($ArgList) {
+    # args as [flag, value-or-$null] pairs: a token after a flag is its value unless it is a flag itself.
+    $out = New-Object System.Collections.Generic.List[object]
+    $a = @($ArgList | ForEach-Object { [string]$_ })
+    for ($i = 0; $i -lt $a.Count; $i++) {
+        $value = $null
+        if ($i + 1 -lt $a.Count -and -not $a[$i + 1].StartsWith('--')) { $value = $a[$i + 1]; $i++ }
+        $out.Add([pscustomobject]@{ Flag = $a[$i - [int]($null -ne $value)]; Value = $value })
+    }
+    return , $out
+}
+
+function Get-JsonValue($Obj, [string]$Key) {
+    # "sampling.temperature" reads a nested key.
+    $parts = $Key.Split('.')
+    $o = $Obj
+    foreach ($p in $parts) {
+        if ($null -eq $o -or -not $o.PSObject.Properties[$p]) { return $null }
+        $o = $o.$p
+    }
+    return $o
+}
+
+function Set-JsonValue($Obj, [string]$Key, $Value) {
+    # $null removes the key (and an emptied parent block).
+    $parts = $Key.Split('.')
+    if ($parts.Count -eq 2) {
+        $parent = $Obj.PSObject.Properties[$parts[0]]
+        if ($null -eq $Value) {
+            if ($parent -and $parent.Value.PSObject.Properties[$parts[1]]) {
+                $parent.Value.PSObject.Properties.Remove($parts[1])
+                if (@($parent.Value.PSObject.Properties).Count -eq 0) { $Obj.PSObject.Properties.Remove($parts[0]) }
+            }
+            return
+        }
+        if (-not $parent) { $Obj | Add-Member -NotePropertyName $parts[0] -NotePropertyValue ([pscustomobject]@{}) }
+        $Obj.($parts[0]) | Add-Member -NotePropertyName $parts[1] -NotePropertyValue $Value -Force
+        return
+    }
+    if ($null -eq $Value) { $Obj.PSObject.Properties.Remove($Key); return }
+    $Obj | Add-Member -NotePropertyName $Key -NotePropertyValue $Value -Force
+}
+
+function New-CfgRow([System.Windows.Controls.Panel]$Panel, [string]$Label, $Editor, [string]$Help, $Extra) {
+    $g = New-Object System.Windows.Controls.Grid
+    $g.Margin = '0,0,0,8'
+    foreach ($w in @(190, 260, 12)) { $c = New-Object System.Windows.Controls.ColumnDefinition; $c.Width = $w; $g.ColumnDefinitions.Add($c) }
+    $c = New-Object System.Windows.Controls.ColumnDefinition; $c.Width = [System.Windows.GridLength]::new(1, 'Star'); $g.ColumnDefinitions.Add($c)
+    $l = New-Object System.Windows.Controls.TextBlock
+    $l.Text = $Label; $l.VerticalAlignment = 'Center'; $l.FontFamily = 'Consolas'; $l.TextTrimming = 'CharacterEllipsis'; $l.ToolTip = $Label
+    [void]$g.Children.Add($l)
+    if ($Extra) {
+        $dp = New-Object System.Windows.Controls.DockPanel
+        [System.Windows.Controls.DockPanel]::SetDock($Extra, 'Right')
+        $Extra.Margin = '6,0,0,0'
+        [void]$dp.Children.Add($Extra); [void]$dp.Children.Add($Editor)
+        [System.Windows.Controls.Grid]::SetColumn($dp, 1); [void]$g.Children.Add($dp)
+    } else {
+        [System.Windows.Controls.Grid]::SetColumn($Editor, 1); [void]$g.Children.Add($Editor)
+    }
+    $h = New-Object System.Windows.Controls.TextBlock
+    $h.Text = $Help; $h.TextWrapping = 'Wrap'; $h.Foreground = '#FF666666'; $h.VerticalAlignment = 'Center'
+    [System.Windows.Controls.Grid]::SetColumn($h, 3); [void]$g.Children.Add($h)
+    [void]$Panel.Children.Add($g)
+}
+
+function New-CfgHeader([System.Windows.Controls.Panel]$Panel, [string]$Text) {
+    $t = New-Object System.Windows.Controls.TextBlock
+    $t.Text = $Text; $t.FontWeight = 'SemiBold'; $t.Margin = '0,6,0,8'
+    [void]$Panel.Children.Add($t)
+}
+
+function New-CfgEditor($Field) {
+    # The control for one field; its Tag is the field, so one handler serves them all.
+    switch ($Field.Kind) {
+        { $_ -in 'bool', 'switch' } {
+            $e = New-Object System.Windows.Controls.CheckBox
+            $e.VerticalAlignment = 'Center'
+            if ($Field.Kind -eq 'bool') { $e.IsThreeState = $true; $e.Content = '(dot = not set: the default)' }
+            $e.Add_Click({ Update-CfgChanges })
+        }
+        { $_ -in 'enum', 'auto', 'ctx', 'host' } {
+            $e = New-Object System.Windows.Controls.ComboBox
+            $e.IsEditable = $_ -ne 'enum'
+            $e.Height = 26
+            [void]$e.Items.Add('')
+            $items = if ($_ -eq 'ctx') { @('32768', '65536', '131072', '204800', '262144', '393216', '524288', '1048576') }
+                elseif ($_ -eq 'host') { @('127.0.0.1', '0.0.0.0') } else { $Field.Choices }
+            foreach ($c in $items) { [void]$e.Items.Add([string]$c) }
+            $e.Add_SelectionChanged({
+                param($s, $a)
+                $script:cfgPending = $s.Tag
+                $s.Dispatcher.BeginInvoke([action]{ if ($script:cfgPending.Kind -eq 'ctx') { Sync-RopeToContext $script:cfgPending }; Update-CfgChanges }) | Out-Null
+            })
+            $e.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]{
+                param($s, $a)
+                if ($s.Tag.Kind -eq 'ctx') { Sync-RopeToContext $s.Tag }
+                Update-CfgChanges
+            })
+        }
+        default {
+            $e = New-Object System.Windows.Controls.TextBox
+            $e.Add_TextChanged({ Update-CfgChanges })
+        }
+    }
+    $e.Tag = $Field
+    [System.Windows.Automation.AutomationProperties]::SetName($e, $Field.Name)   # screen readers and UI tests
+    $Field.Control = $e
+    return $e
+}
+
+function Get-FieldText($Field) {
+    # The control's value as text; $null = not set.
+    $c = $Field.Control
+    switch ($Field.Kind) {
+        'bool' { if ($null -eq $c.IsChecked) { return $null }; return ([string][bool]$c.IsChecked).ToLower() }
+        'switch' { if ($c.IsChecked) { return 'on' }; return $null }
+        { $_ -in 'enum', 'auto', 'ctx', 'host' } { $t = [string]$c.Text; if ($c -is [System.Windows.Controls.ComboBox] -and -not $c.IsEditable) { $t = [string]$c.SelectedItem } }
+        default { $t = [string]$c.Text }
+    }
+    $t = $t.Trim()
+    if ($t -eq '') { return $null }
+    return $t
+}
+
+function Set-FieldValue($Field, $Value) {
+    $c = $Field.Control
+    switch ($Field.Kind) {
+        'bool' { $c.IsChecked = $(if ($null -eq $Value) { $null } else { [bool]$Value }) }
+        'switch' { $c.IsChecked = [bool]$Value }
+        'enum' {
+            $v = if ($null -eq $Value) { '' } else { [string]$Value }
+            if (-not $c.Items.Contains($v)) { [void]$c.Items.Add($v) }   # a value the list does not know is kept, not dropped
+            $c.SelectedItem = $v
+        }
+        { $_ -in 'auto', 'ctx', 'host' } { $c.Text = $(if ($null -eq $Value) { '' } else { [string]$Value }) }
+        'names' { $c.Text = $(if ($null -eq $Value) { '' } else { @($Value) -join ', ' }) }
+        default { $c.Text = $(if ($null -eq $Value) { '' } else { [string]$Value }) }
+    }
+}
+
+function Test-FieldText($Field, [string]$Text) {
+    # -> the value to store (typed), or throws naming what is expected.
+    $name = $Field.Name
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $num = {
+        param($whole)
+        $d = 0.0
+        if (-not [double]::TryParse($Text, [Globalization.NumberStyles]::Float, $inv, [ref]$d) -or ($whole -and $d -ne [Math]::Floor($d))) {
+            throw "${name}: expected a $(if ($whole) { 'whole ' })number, not '$Text'"
+        }
+        if ($null -ne $Field.Min -and $d -lt $Field.Min) { throw "${name}: at least $($Field.Min)" }
+        if ($null -ne $Field.Max -and $d -gt $Field.Max) { throw "${name}: at most $($Field.Max)" }
+        if ($whole) { return [int64]$d } else { return $d }
+    }
+    switch ($Field.Kind) {
+        'bool' { return ($Text -eq 'true') }
+        'switch' { return $true }
+        'enum' { if ($Field.Choices -notcontains $Text -and $Text -ne $Field.Original) { throw "${name}: one of $($Field.Choices -join ', ')" }; return $Text }
+        'auto' { if ($Field.Choices -contains $Text -or $Text -match '^\d+$') { return $Text }; throw "${name}: $($Field.Choices -join ', ') or a whole number" }
+        'ctx' { if ($Text -notmatch '^\d+$' -or [int64]$Text -lt 2048) { throw "${name}: a number of tokens (at least 2048)" }; return $Text }
+        'host' { return $Text }
+        'names' { return @($Text.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+        'text' { return $Text }
+        'port' { $Field.Min = 1; $Field.Max = 65535; return (& $num $true) }
+        'int' { return (& $num $true) }
+        'int>=0' { $Field.Min = 0; return (& $num $true) }
+        'num' { return (& $num $false) }
+        'num>=0' { $Field.Min = 0; return (& $num $false) }
+        '0<x<=1' { $v = & $num $false; if ($v -le 0 -or $v -gt 1) { throw "${name}: more than 0 and at most 1" }; return $v }
+        '0<=x<=1' { $Field.Min = 0; $Field.Max = 1; return (& $num $false) }
+        '1..64' { $Field.Min = 1; $Field.Max = 64; return (& $num $true) }
+        default { return $Text }
+    }
+}
+
+function Open-ConfigEditor($Row, [switch]$Force, $Override) {
+    # Load $Row's config into the form (asking first when the form has unsaved changes). $Override:
+    # fill the form from that config instead (the JSON tab) while changes still count against the file.
+    if (-not $Row) { return }
+    if ($script:cfgEdit -and -not $Force -and -not $Override) {
+        if ($script:cfgEdit.Row.Path -eq $Row.Path) { return }
+        if ($script:cfgEdit.Dirty) {
+            $a = [System.Windows.MessageBox]::Show("Discard the unsaved changes to $($script:cfgEdit.Row.File)?", 'Strata', 'YesNo')
+            if ($a -ne 'Yes') { return }
+        }
+    }
+    try { $fileCfg = Get-Content -LiteralPath $Row.Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
+        $ui.CfgTitle.Text = "$($Row.File): not valid JSON ($($_.Exception.Message)). Fix it in the JSON tab or another editor."
+        $script:cfgEdit = $null
+        return
+    }
+    $cfg = if ($Override) { $Override } else { $fileCfg }
+    $script:cfgLoading = $true
+    $fields = New-Object System.Collections.Generic.List[object]
+    foreach ($p in @($ui.CfgServerPanel, $ui.CfgEnginePanel, $ui.CfgFilesPanel)) { $p.Children.Clear() }
+
+    New-CfgHeader $ui.CfgServerPanel 'Model and network'
+    foreach ($d in @(
+            @{ Name = 'model_name'; Kind = 'text'; Help = 'The model id the API reports and clients ask for. Cline, the benchmark and this GUI find the server by it.' }
+            @{ Name = 'port'; Kind = 'port'; Help = 'The HTTP port (Strata''s default 8080). Two configs on one port cannot run together.' }
+            @{ Name = 'host'; Kind = 'host'; Help = 'The address the server listens on. Empty or 127.0.0.1: this PC only. Anything else needs an API key (saving refuses without one).' }
+            @{ Name = 'api_key'; Kind = 'text'; Help = 'Clients must send this key. Needed when host is not this PC only.' }
+            @{ Name = 'gpu'; Kind = 'text'; Help = 'The GPU(s) to run on, as nvidia-smi numbers them (e.g. 0, or 0,1 for a layer split).' })) {
+        $f = [pscustomobject]@{ Name = $d.Name; Key = $d.Name; Kind = $d.Kind; Choices = $null; Min = $null; Max = $null; Where = 'top'; Control = $null; Original = $null }
+        New-CfgRow $ui.CfgServerPanel $d.Name (New-CfgEditor $f) $d.Help $null
+        $fields.Add($f)
+    }
+    New-CfgHeader $ui.CfgServerPanel 'Server settings (the list Strata''s own Settings page edits)'
+    foreach ($s in (Get-ConfigSchema)) {
+        $kind = if ($s.kind -eq 'enum') { 'enum' } else { [string]$s.kind }
+        $f = [pscustomobject]@{ Name = $s.key; Key = $s.key; Kind = $kind; Choices = @($s.choices); Min = $null; Max = $null; Where = 'top'; Control = $null; Original = $null }
+        New-CfgRow $ui.CfgServerPanel $s.key (New-CfgEditor $f) $s.help $null
+        $fields.Add($f)
+    }
+
+    New-CfgHeader $ui.CfgEnginePanel 'Engine options (args). Empty = not passed: the engine''s default.'
+    foreach ($d in $EngineFlags) {
+        $f = [pscustomobject]@{ Name = $d.Flag; Key = $d.Flag; Kind = $d.Kind; Choices = @($d.Choices); Min = $d.Min; Max = $d.Max; Where = 'arg'; Control = $null; Original = $null }
+        New-CfgRow $ui.CfgEnginePanel $d.Flag (New-CfgEditor $f) $d.Help $null
+        $fields.Add($f)
+    }
+
+    New-CfgHeader $ui.CfgFilesPanel 'Model files (a red mark: the path does not exist)'
+    foreach ($d in @($TopFiles | ForEach-Object { $_ + @{ Where = 'top'; Name = $_.Key } }) + @($FileFlags | ForEach-Object { $_ + @{ Where = 'arg'; Name = $_.Flag; Key = $_.Flag } })) {
+        $f = [pscustomobject]@{ Name = $d.Name; Key = $d.Key; Kind = 'path'; Choices = $null; Min = $null; Max = $null; Where = $d.Where
+                                Dir = [bool]$d.Dir; NoCheck = [bool]$d.NoCheck; Control = $null; Original = $null; Mark = $null }
+        $ed = New-CfgEditor $f
+        $panel = New-Object System.Windows.Controls.StackPanel
+        $panel.Orientation = 'Horizontal'
+        $mark = New-Object System.Windows.Controls.TextBlock
+        $mark.Width = 16; $mark.VerticalAlignment = 'Center'; $mark.FontWeight = 'Bold'
+        $f.Mark = $mark
+        $b = New-Object System.Windows.Controls.Button
+        $b.Content = '...'; $b.MinWidth = 30; $b.Padding = '6,0'; $b.Margin = '0'; $b.Tag = $f
+        $b.Add_Click({
+            param($s, $a)
+            $fld = $s.Tag
+            if ($fld.Dir) { $p = Select-Folder (Get-FieldText $fld) "Choose $($fld.Name)" }
+            else {
+                $dlg = New-Object System.Windows.Forms.OpenFileDialog
+                $cur = Get-FieldText $fld
+                if ($cur -and (Test-Path -LiteralPath (Split-Path $cur -Parent))) { $dlg.InitialDirectory = Split-Path $cur -Parent; $dlg.FileName = Split-Path $cur -Leaf }
+                $p = if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dlg.FileName } else { $null }
+            }
+            if ($p) { $fld.Control.Text = $p }
+        })
+        [void]$panel.Children.Add($mark); [void]$panel.Children.Add($b)
+        New-CfgRow $ui.CfgFilesPanel $d.Name $ed $d.Help $panel
+        $fields.Add($f)
+    }
+
+    # Values: top-level keys straight from the JSON; args split into flag/value pairs, the first of
+    # each curated flag goes to its control and everything else to the Other arguments table.
+    $entries = Split-ArgEntries $cfg.args
+    $curated = @($fields | Where-Object { $_.Where -eq 'arg' } | ForEach-Object { $_.Key })
+    $taken = @{}
+    $script:cfgArgs.Clear()
+    foreach ($e in $entries) {
+        if ($curated -contains $e.Flag -and -not $taken.ContainsKey($e.Flag)) { $taken[$e.Flag] = $e; continue }
+        $script:cfgArgs.Add((New-Object StrataCfgArg -Property @{ Flag = $e.Flag; Value = $e.Value }))
+    }
+    foreach ($f in $fields) {
+        $v = if ($f.Where -eq 'top') { Get-JsonValue $cfg $f.Key }
+            elseif ($taken.ContainsKey($f.Key)) { if ($f.Kind -eq 'switch') { $true } else { $taken[$f.Key].Value } }
+            else { $null }
+        Set-FieldValue $f $v
+        $f.Original = Get-FieldText $f
+    }
+    $script:cfgEdit = @{ Row = $Row; Cfg = $fileCfg; Base = $cfg; Fields = $fields; Dirty = $false; OriginalJson = (Get-ConfigText $fileCfg) }
+    $script:cfgLoading = $false
+    $ui.CfgTitle.Text = "$($Row.File)  -  $($Row.Path)"
+    Update-CfgChanges
+}
+
+function Get-ConfigText($Cfg) { ($Cfg | ConvertTo-Json -Depth 20) }
+
+function Build-Config {
+    # The config the form describes: a copy of the loaded one with every field and the table applied.
+    # -> @{ Cfg; Errors }
+    $ed = $script:cfgEdit
+    $new = (Get-ConfigText $ed.Base) | ConvertFrom-Json
+    $errors = New-Object System.Collections.Generic.List[string]
+    $argOut = New-Object System.Collections.Generic.List[string]
+    foreach ($f in $ed.Fields) {
+        $t = Get-FieldText $f
+        $v = $null
+        if ($null -ne $t) { try { $v = Test-FieldText $f $t } catch { $errors.Add($_.Exception.Message); continue } }
+        if ($f.Where -eq 'top') {
+            if ($f.Key -eq 'gpu' -and $v -is [string] -and $v -match '^\d+$') { $v = [int]$v }
+            if ($f.Kind -eq 'names' -and @($v).Count -eq 0) { $v = $null }
+            Set-JsonValue $new $f.Key $v
+        } elseif ($null -ne $v) {
+            $argOut.Add($f.Key)
+            if ($f.Kind -ne 'switch') { $argOut.Add($(if ($v -is [double]) { $v.ToString([Globalization.CultureInfo]::InvariantCulture) } else { [string]$v })) }
+        }
+    }
+    foreach ($r in $script:cfgArgs) {
+        $flag = ([string]$r.Flag).Trim()
+        if (-not $flag) { continue }
+        if (-not $flag.StartsWith('--')) { $errors.Add("Other arguments: '$flag' is not a flag (they start with --)"); continue }
+        $argOut.Add($flag)
+        $val = ([string]$r.Value).Trim()
+        if ($val) { $argOut.Add($val) }
+    }
+    $new.args = $argOut.ToArray()
+    # The same guards Strata keeps: no network exposure without a key, no lazy load with images.
+    $hostV = [string]$new.host
+    if ($hostV -and $hostV -notin @('127.0.0.1', 'localhost', '::1') -and -not $new.api_key) {
+        $errors.Add("host $($hostV): reachable from other machines, so set an api_key first")
+    }
+    if ($new.lazy_load -eq $true -and $new.vision) { $errors.Add('lazy_load: lazy loading is text-only, and this model reads images ("vision")') }
+    $ctx = Get-ArgValue $new.args '--max-context'
+    if ($ctx -match '^\d+$' -and [int64]$ctx -gt $TrainedContext -and -not (Get-ArgValue $new.args '--rope-scaling')) {
+        $errors.Add("--max-context $($ctx): past the trained 262,144, so set --rope-scaling (yarn)")
+    }
+    if (-not $new.model_name) { $errors.Add('model_name: required') }
+    return @{ Cfg = $new; Errors = $errors }
+}
+
+function Get-ConfigDiff($Old, $New) {
+    # Readable changes between two configs: top-level keys, then args flag by flag.
+    $lines = New-Object System.Collections.Generic.List[string]
+    $keys = @($Old.PSObject.Properties.Name) + @($New.PSObject.Properties.Name) | Where-Object { $_ -ne 'args' } | Select-Object -Unique
+    foreach ($k in $keys) {
+        $a = if ($Old.PSObject.Properties[$k]) { $Old.$k | ConvertTo-Json -Compress -Depth 10 } else { '(not set)' }
+        $b = if ($New.PSObject.Properties[$k]) { $New.$k | ConvertTo-Json -Compress -Depth 10 } else { '(not set)' }
+        if ($a -ne $b) { $lines.Add("$k`: $a -> $b") }
+    }
+    $mapOf = {
+        param($list)
+        $m = [ordered]@{}
+        foreach ($e in (Split-ArgEntries $list)) {
+            $v = if ($null -eq $e.Value) { '(on)' } else { $e.Value }
+            if ($m.Contains($e.Flag)) { $m[$e.Flag] += " | $v" } else { $m[$e.Flag] = $v }
+        }
+        $m
+    }
+    $ma = & $mapOf $Old.args
+    $mb = & $mapOf $New.args
+    foreach ($f in @($ma.Keys) + @($mb.Keys) | Select-Object -Unique) {
+        $a = if ($ma.Contains($f)) { $ma[$f] } else { '(not set)' }
+        $b = if ($mb.Contains($f)) { $mb[$f] } else { '(not set)' }
+        if ($a -ne $b) { $lines.Add("$f`: $a -> $b") }
+    }
+    return , $lines
+}
+
+function Update-CfgChanges {
+    if ($script:cfgLoading -or -not $script:cfgEdit) { return }
+    $r = Build-Config
+    $diff = Get-ConfigDiff $script:cfgEdit.Cfg $r.Cfg
+    $script:cfgEdit.Dirty = $diff.Count -gt 0
+    foreach ($f in $script:cfgEdit.Fields) {
+        if ($f.Mark) {
+            $p = Get-FieldText $f
+            $ok = $f.NoCheck -or -not $p -or (Test-Path -LiteralPath $p)
+            $f.Mark.Text = $(if ($p -and -not $f.NoCheck) { if ($ok) { [char]0x2713 } else { [char]0x2717 } } else { '' })
+            $f.Mark.Foreground = $(if ($ok) { '#FF2E7D32' } else { '#FFC62828' })
+        }
+    }
+    $text = if ($r.Errors.Count) { 'Cannot save: ' + ($r.Errors -join ';  ') }
+        elseif ($diff.Count) { "Unsaved changes ($($diff.Count)):  " + ($diff -join ';  ') }
+        else { 'No changes.' }
+    $ui.CfgChanges.Text = $text
+    $ui.CfgChanges.Foreground = $(if ($r.Errors.Count) { '#FFC62828' } else { '#FF444444' })
+    $ui.CfgSaveBtn.IsEnabled = $diff.Count -gt 0 -and $r.Errors.Count -eq 0
+    if ($ui.CfgTabs.SelectedIndex -eq 4 -and -not $ui.CfgJson.IsKeyboardFocusWithin) { $ui.CfgJson.Text = Get-ConfigText $r.Cfg }
+}
+
+function Sync-RopeToContext($Field) {
+    # Changing the context sets rope scaling the way Strata's setup does (Set-ContextArgs): nothing
+    # inside the trained window, yarn with a covering factor past it. Both stay editable.
+    if ($script:cfgLoading -or -not $script:cfgEdit) { return }
+    $t = Get-FieldText $Field
+    if ($t -notmatch '^\d+$') { return }
+    $ctx = [int64]$t
+    $scaling = $script:cfgEdit.Fields | Where-Object { $_.Key -eq '--rope-scaling' }
+    $scale = $script:cfgEdit.Fields | Where-Object { $_.Key -eq '--rope-scale' }
+    if ($ctx -le $TrainedContext) {
+        Set-FieldValue $scaling $null; Set-FieldValue $scale $null
+    } else {
+        if (-not (Get-FieldText $scaling)) { Set-FieldValue $scaling 'yarn' }
+        $need = Get-RopeScale $ctx
+        $have = Get-FieldText $scale
+        $d = 0.0
+        if (-not $have -or -not [double]::TryParse($have, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$d) -or $d -lt $need) {
+            Set-FieldValue $scale $need.ToString([Globalization.CultureInfo]::InvariantCulture)
+        }
+    }
+}
+
+function Save-ConfigEditor {
+    $ed = $script:cfgEdit
+    if (-not $ed) { return }
+    $r = Build-Config
+    if ($r.Errors.Count) { [System.Windows.MessageBox]::Show(($r.Errors -join "`n"), 'Strata: cannot save') | Out-Null; return }
+    $diff = Get-ConfigDiff $ed.Cfg $r.Cfg
+    if ($diff.Count -eq 0) { Set-Status 'No changes to save.'; return }
+    # Someone else (setup, Strata's Settings page) may have written the file since it was loaded.
+    $onDisk = try { Get-ConfigText (Get-Content -LiteralPath $ed.Row.Path -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { '' }
+    if ($onDisk -ne $ed.OriginalJson) {
+        $a = [System.Windows.MessageBox]::Show("$($ed.Row.File) changed on disk since it was opened here. Overwrite those changes?", 'Strata', 'YesNo')
+        if ($a -ne 'Yes') { return }
+    }
+    $msg = "Save these changes to $($ed.Row.File)?`n`n" + ($diff -join "`n") + "`n`nThe current file is kept as $($ed.Row.File).bak."
+    if (Test-RowRunning $ed.Row) { $msg += "`n`nThe server is running: it uses the new config from its next start." }
+    if ([System.Windows.MessageBox]::Show($msg, 'Strata', 'YesNo') -ne 'Yes') { return }
+    if (-not (Write-ConfigFile $ed.Row.Path $r.Cfg)) { return }
+    $path = $ed.Row.Path
+    Read-Configs
+    $row = $script:configs | Where-Object { $_.Path -eq $path } | Select-Object -First 1
+    if ($row) { $ui.ConfigList.SelectedItem = $row; Open-ConfigEditor $row -Force }
+    Set-Status "Saved $(Split-Path $path -Leaf) (the previous version is $(Split-Path $path -Leaf).bak)$(if ($row -and (Test-RowRunning $row)) { '; restart the server to use it' })."
+}
+
+function Write-ConfigFile([string]$Path, $Cfg) {
+    # Through Strata's runconfig.save when the venv has it (.bak + atomic replace), else the same by hand.
+    $tmp = Join-Path $TempDir ('config-' + [Guid]::NewGuid().ToString('N') + '.json')
+    if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
+    [IO.File]::WriteAllText($tmp, (Get-ConfigText $Cfg), (New-Object Text.UTF8Encoding $false))
+    try {
+        $py = Get-Python
+        $script = Join-Path $TempDir 'runconfig-gui.py'
+        Set-Content -LiteralPath $script -Value $ConfigPy -Encoding ascii
+        if ($py -and (Test-Path -LiteralPath (Join-Path (Get-Root) 'serve\runconfig.py'))) {
+            if (-not (Test-Path -LiteralPath $Path)) { Copy-Item -LiteralPath $tmp -Destination $Path }   # save needs a file to back up
+            $out = & $py -I $script save (Join-Path (Get-Root) 'serve') $Path $tmp 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { throw $out.Trim() }
+        } else {
+            if (Test-Path -LiteralPath $Path) { Copy-Item -LiteralPath $Path -Destination "$Path.bak" -Force }
+            Move-Item -LiteralPath $tmp -Destination $Path -Force
+        }
+        return $true
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not save $Path`n`n$($_.Exception.Message)", 'Strata') | Out-Null
+        return $false
+    } finally { Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue }
+}
+
+function Save-ConfigAs {
+    $ed = $script:cfgEdit
+    if (-not $ed) { return }
+    $r = Build-Config
+    if ($r.Errors.Count) { [System.Windows.MessageBox]::Show(($r.Errors -join "`n"), 'Strata: cannot save') | Out-Null; return }
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $base = [IO.Path]::GetFileNameWithoutExtension($ed.Row.File) -replace '^strata-', ''
+    $name = [Microsoft.VisualBasic.Interaction]::InputBox(
+        "A name for the new config (saved as strata-<name>.json beside the others). It starts as the form shows it now; give it its own model_name and port in the form afterwards if both should run.",
+        'Save as new config', "$base-variant")
+    $name = $name.Trim() -replace '^strata-', '' -replace '\.json$', ''
+    if (-not $name) { return }
+    if ($name -notmatch '^[\w\.\-]+$') { [System.Windows.MessageBox]::Show('Use letters, digits, ., - and _ only.', 'Strata') | Out-Null; return }
+    $path = Join-Path (Get-Root) "strata-$name.json"
+    if (Test-Path -LiteralPath $path) { [System.Windows.MessageBox]::Show("$(Split-Path $path -Leaf) exists already.", 'Strata') | Out-Null; return }
+    [IO.File]::WriteAllText($path, (Get-ConfigText $r.Cfg), (New-Object Text.UTF8Encoding $false))
+    $script:cfgEdit.Dirty = $false
+    Read-Configs
+    $row = $script:configs | Where-Object { $_.Path -eq $path } | Select-Object -First 1
+    if ($row) { $ui.ConfigList.SelectedItem = $row; Open-ConfigEditor $row -Force }
+    Update-ServicePicker
+    Set-Status "Created $(Split-Path $path -Leaf)."
+}
+
 # ------------------------------------------------------------------------------------ model catalog
 # setup.py holds the catalog (sizes and RAM needs per quant); it is read from this checkout so it stays current.
 $CatalogPy = @'
@@ -1391,7 +2060,10 @@ $ClineReservePercent = [int]$ui.ReserveBox.SelectedItem
 $ui.ReserveBox.Add_SelectionChanged({ $script:ClineReservePercent = [int]$ui.ReserveBox.SelectedItem; Update-CtxHint })
 $ui.CtxBox.Add_SelectionChanged({ $window.Dispatcher.BeginInvoke([action]{ Update-CtxHint }) | Out-Null })
 $ui.CtxBox.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]{ Update-CtxHint })
-$ui.ConfigList.Add_SelectionChanged({ Update-CtxHint })
+$ui.ConfigList.Add_SelectionChanged({
+    Update-CtxHint
+    if ($ui.Tabs.SelectedItem -eq $ui.ConfigTab) { Open-ConfigEditor (@(Get-SelectedConfigs) | Select-Object -First 1) }
+})
 $ui.OpenWebChk.IsChecked = [bool]$settings.OpenWeb
 $ui.MinChk.IsChecked = [bool]$settings.Minimized
 $ui.OllamaChk.IsChecked = [bool]$settings.UnloadOllama
@@ -1456,12 +2128,14 @@ $ui.WebBtn.Add_Click({
 $ui.LogBtn.Add_Click({
     $row = Get-Selected
     if (-not $row) { return }
-    if ($row.Log -and (Test-Path -LiteralPath $row.Log)) { Start-Process notepad.exe -ArgumentList "`"$($row.Log)`"" }
+    if ($row.Log -and (Test-Path -LiteralPath $row.Log)) { Show-TextWindow $row.Log "Engine log - $($row.Model)" }
     else { Set-Status "No engine log yet: $($row.Log)" }
 })
 $ui.ConfigBtn.Add_Click({
     $row = Get-Selected
-    if ($row) { Start-Process notepad.exe -ArgumentList "`"$($row.Path)`"" }
+    if (-not $row) { return }
+    $ui.Tabs.SelectedItem = $ui.ConfigTab
+    Open-ConfigEditor $row
 })
 $ui.ClineBtn.Add_Click({
     $row = Get-Selected
@@ -1487,7 +2161,7 @@ $ui.ResReadmeBtn.Add_Click({
     $row = $ui.ResultList.SelectedItem
     if (-not $row) { return }
     $readme = Join-Path $row.Path 'README.md'
-    if (Test-Path -LiteralPath $readme) { Start-Process notepad.exe -ArgumentList "`"$readme`"" }
+    if (Test-Path -LiteralPath $readme) { Show-TextWindow $readme "Benchmark report - $($row.Name)" }
 })
 $ui.ResFolderBtn.Add_Click({
     $row = $ui.ResultList.SelectedItem
@@ -1498,6 +2172,7 @@ $ui.ResCompareBtn.Add_Click({ Compare-Results })
 $ui.Tabs.Add_SelectionChanged({
     param($sender, $e)
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ServiceTab) { Update-ServiceStatus }
+    if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ConfigTab) { Open-ConfigEditor (@(Get-SelectedConfigs) | Select-Object -First 1) }
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ModelsTab -and -not $script:catalog) {
         Set-Status 'Reading the model catalog from setup.py...'
         Read-Catalog
@@ -1516,6 +2191,35 @@ $ui.CatalogList.Add_SelectionChanged({
     if ($row) { $ui.CatDetail.Text = $row.About }
 })
 $ui.InstallBtn.Add_Click({ Install-CatalogModel })
+
+$ui.CfgSaveBtn.Add_Click({ Save-ConfigEditor })
+$ui.CfgRevertBtn.Add_Click({ if ($script:cfgEdit) { Open-ConfigEditor $script:cfgEdit.Row -Force } })
+$ui.CfgSaveAsBtn.Add_Click({ Save-ConfigAs })
+$ui.CfgFileBtn.Add_Click({ if ($script:cfgEdit) { Open-External $script:cfgEdit.Row.Path } })
+$ui.CfgFolderBtn.Add_Click({ if ($script:cfgEdit) { Start-Process explorer.exe -ArgumentList "/select,$(QPath $script:cfgEdit.Row.Path)" } })
+$ui.CfgArgAddBtn.Add_Click({
+    $r = New-Object StrataCfgArg -Property @{ Flag = '--'; Value = '' }
+    $script:cfgArgs.Add($r)
+    $ui.CfgArgsGrid.SelectedItem = $r
+    $ui.CfgArgsGrid.ScrollIntoView($r)
+    Update-CfgChanges
+})
+$ui.CfgArgDelBtn.Add_Click({
+    $r = $ui.CfgArgsGrid.SelectedItem
+    if ($r -is [StrataCfgArg]) { [void]$script:cfgArgs.Remove($r); Update-CfgChanges }
+})
+$ui.CfgArgsGrid.Add_CellEditEnding({ $window.Dispatcher.BeginInvoke([action]{ Update-CfgChanges }) | Out-Null })
+$ui.CfgJsonApplyBtn.Add_Click({
+    if (-not $script:cfgEdit) { return }
+    try { $j = $ui.CfgJson.Text | ConvertFrom-Json } catch { Set-Status "JSON: $($_.Exception.Message)"; return }
+    if ($j -isnot [pscustomobject] -or -not $j.args) { Set-Status 'JSON: expected an object with "args".'; return }
+    Open-ConfigEditor $script:cfgEdit.Row -Override $j
+    Set-Status 'Loaded the JSON into the form; Save writes it.'
+})
+$ui.CfgTabs.Add_SelectionChanged({
+    param($s, $e)
+    if ($e.OriginalSource -eq $ui.CfgTabs -and $ui.CfgTabs.SelectedIndex -eq 4 -and $script:cfgEdit) { $ui.CfgJson.Text = Get-ConfigText (Build-Config).Cfg }
+})
 
 $ui.SvcApplyBtn.Add_Click({ Install-StrataService })
 $ui.SvcRemoveBtn.Add_Click({ Remove-StrataService })
@@ -1537,7 +2241,7 @@ $ui.SvcUnloadBtn.Add_Click({
         409 { 'Busy: a request is running. Try again when it has finished.' } default { "Unload failed (HTTP $code)." } })
 })
 $ui.SvcLogBtn.Add_Click({
-    if (Test-Path -LiteralPath $ServiceLog) { Start-Process notepad.exe -ArgumentList "`"$ServiceLog`"" } else { Set-Status 'No service log yet.' }
+    if (Test-Path -LiteralPath $ServiceLog) { Show-TextWindow $ServiceLog 'Strata on-demand service log' } else { Set-Status 'No service log yet.' }
 })
 
 $timer = New-Object System.Windows.Threading.DispatcherTimer
@@ -1566,7 +2270,10 @@ $timer.Add_Tick({
 
 $window.Add_Closing({
     param($sender, $e)
-    if ($script:job) {
+    if ($script:cfgEdit -and $script:cfgEdit.Dirty) {
+        $answer = [System.Windows.MessageBox]::Show("$($script:cfgEdit.Row.File) has unsaved changes. Close anyway?", 'Strata', 'YesNo')
+        if ($answer -ne 'Yes') { $e.Cancel = $true; return }
+    }    if ($script:job) {
         $answer = [System.Windows.MessageBox]::Show('A benchmark is running. Cancel it and close?', 'Strata', 'YesNo')
         if ($answer -ne 'Yes') { $e.Cancel = $true; return }
         Stop-Bench
