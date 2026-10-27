@@ -17,6 +17,8 @@ $ThinkingLevels = @('none', 'low', 'medium', 'high', 'xhigh')
 $LoadTimeoutMinutes = 30
 # Tokens held back from the context Cline is told about - see Get-ClineContext.
 $ClineContextReserve = 4096
+$ClineReservePercent = 10     # the Headroom box
+$TrainedContext = 262144      # the model's trained window: past it Strata needs rope scaling
 $ServiceLog = Join-Path $PSScriptRoot 'strata-service.log'
 $ServiceErrLog = Join-Path $PSScriptRoot 'strata-service.err.log'
 
@@ -69,6 +71,9 @@ $defaults = [ordered]@{
     Thinking      = ''
     Context       = ''
     ExtraArgs     = ''
+    VramReserve   = ''
+    FitMaxTokens  = $true
+    ReservePercent = '10'
     OpenWeb       = $false
     Minimized     = $false
     UnloadOllama  = $true
@@ -180,6 +185,18 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
               <TextBlock Grid.Column="3" Text="Extra engine args" Style="{StaticResource Label}"/>
               <TextBox Grid.Column="4" x:Name="ExtraBox" ToolTip="Appended to the config's engine args, e.g. --kv q8 --prefill 1024"/>
             </Grid>
+            <Grid Margin="0,0,0,6">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="200"/>
+                <ColumnDefinition Width="24"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="VRAM reserve MiB" Style="{StaticResource Label}"/>
+              <TextBox Grid.Column="1" x:Name="VramBox" ToolTip="--vram-reserve-mib: GPU memory the engine leaves free. Empty: the config's. The engine log says when it wants more."/>
+              <CheckBox Grid.Column="3" x:Name="FitChk" Content="Shorten an answer that would not fit instead of refusing the request (fit_max_tokens)"/>
+            </Grid>
+            <TextBlock x:Name="CtxHint" Style="{StaticResource Hint}" Margin="0,2,0,0"/>
             <WrapPanel Margin="0,6,0,10">
               <CheckBox x:Name="OpenWebChk" Content="Open the web page when ready"/>
               <CheckBox x:Name="MinChk" Content="Start the server window minimized"/>
@@ -218,6 +235,9 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
             <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
               <TextBlock Width="110" Text="Thinking" Style="{StaticResource Label}"/>
               <ComboBox x:Name="ThinkingBox" Width="200" Margin="0,0,16,0"/>
+              <TextBlock Text="Headroom" Style="{StaticResource Label}"/>
+              <ComboBox x:Name="ReserveBox" Width="70" Margin="0,0,16,0"
+                        ToolTip="Share of the context Cline is not told about, so it compacts before the server refuses a prompt (at least 4096 tokens). Cline undercounts by ~4-5%; 10% leaves room for the answer too."/>
               <Button x:Name="ClineBtn" Content="Open Cline" FontWeight="SemiBold"/>
             </StackPanel>
             <TextBlock Style="{StaticResource Hint}" Text="Starts the selected server if it is not running, waits until the model is loaded, then opens Cline in the folder pointed at that server."/>
@@ -503,21 +523,60 @@ function Read-Configs {
     }
 }
 
+function Get-CtxOverride {
+    # The Max context box as tokens, 0 for "(config)". Its steps read "393216  (yarn x1.5, experimental)".
+    $t = $ui.CtxBox.Text.Trim()
+    if (-not $t -or $t -eq '(config)') { return 0 }
+    if ($t -notmatch '^(\d+)') { throw "Max context must be a number of tokens: $t" }
+    return [int64]$Matches[1]
+}
+
+function Get-RopeScale([int64]$Ctx) {
+    # The yarn factor that covers $Ctx, as setup derives it: context / the trained 262144, at least 1.
+    return [Math]::Max(1.0, [Math]::Ceiling($Ctx / [double]$TrainedContext * 100) / 100)
+}
+
+function Set-ArgValue($List, [string]$Name, [string]$Value) {
+    $i = $List.IndexOf($Name)
+    if ($i -ge 0 -and $i + 1 -lt $List.Count) { $List[$i + 1] = $Value } else { $List.Add($Name); $List.Add($Value) }
+}
+
+function Remove-Arg($List, [string]$Name) {
+    $i = $List.IndexOf($Name)
+    if ($i -ge 0) { $List.RemoveRange($i, [Math]::Min(2, $List.Count - $i)) }
+}
+
+function Set-ContextArgs($List, [int64]$Ctx) {
+    # --max-context plus the rope scaling it needs. Inside the trained 262144 a run is unscaled (a scaled run is
+    # a slightly different model at every position, so Strata's setup only scales past it); past it, yarn with a
+    # factor that covers the context (the one Strata's docs recommend; experimental there).
+    Set-ArgValue $List '--max-context' ([string]$Ctx)
+    if ($Ctx -le $TrainedContext) {
+        Remove-Arg $List '--rope-scaling'
+        Remove-Arg $List '--rope-scale'
+        return
+    }
+    if ($List.IndexOf('--rope-scaling') -lt 0) { Set-ArgValue $List '--rope-scaling' 'yarn' }
+    $need = Get-RopeScale $Ctx
+    $have = Get-ArgValue $List '--rope-scale'
+    if (-not $have -or [double]$have -lt $need) { Set-ArgValue $List '--rope-scale' $need.ToString([Globalization.CultureInfo]::InvariantCulture) }
+}
+
 function Get-EffectiveConfig($Row) {
     # The config as is, or a copy with the launch overrides applied.
-    $ctx = $ui.CtxBox.Text.Trim()
+    $ctx = Get-CtxOverride
     $extra = $ui.ExtraBox.Text.Trim()
-    if ($ctx -eq '(config)') { $ctx = '' }
-    if (-not $ctx -and -not $extra) { return $Row.Path }
+    $vram = $ui.VramBox.Text.Trim()
+    if ($vram -and $vram -notmatch '^\d+$') { throw "VRAM reserve must be a number of MiB: $vram" }
+    $fit = [bool]$ui.FitChk.IsChecked
+    if (-not $ctx -and -not $extra -and -not $vram -and -not $fit) { return $Row.Path }
     $cfg = Get-Content -LiteralPath $Row.Path -Raw | ConvertFrom-Json
     $list = New-Object System.Collections.Generic.List[string]
     foreach ($a in $cfg.args) { $list.Add([string]$a) }
-    if ($ctx) {
-        if ($ctx -notmatch '^\d+$') { throw "Max context must be a number of tokens: $ctx" }
-        $i = $list.IndexOf('--max-context')
-        if ($i -ge 0 -and $i + 1 -lt $list.Count) { $list[$i + 1] = $ctx } else { $list.Add('--max-context'); $list.Add($ctx) }
-    }
+    if ($ctx) { Set-ContextArgs $list $ctx }
+    if ($vram) { Set-ArgValue $list '--vram-reserve-mib' $vram }
     if ($extra) { foreach ($a in (Split-Args $extra)) { $list.Add($a) } }
+    if ($fit) { $cfg | Add-Member -NotePropertyName fit_max_tokens -NotePropertyValue $true -Force }
     $cfg.args = $list.ToArray()
     if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
     $out = Join-Path $TempDir $Row.File
@@ -669,8 +728,9 @@ function Get-RowContext($Row) {
     # falls through to the config instead of trusting health alone.
     $h = $script:health[$Row.Port]
     if ($h -and $h.Context) { return [int64]$h.Context }
-    $ctx = $ui.CtxBox.Text.Trim()
-    if ($ctx -and $ctx -ne '(config)' -and $ctx -match '^\d+$') { return [int64]$ctx }
+    $ctx = 0
+    try { $ctx = Get-CtxOverride } catch {}
+    if ($ctx -gt 0) { return $ctx }
     $c = Get-ArgValue $Row.Cfg.args '--max-context'
     if ($c -and $c -match '^\d+$') { return [int64]$c }
     return 0
@@ -687,9 +747,41 @@ function Get-ClineContext([int64]$Ctx) {
     # that error, the server's own CTX_SLACK (8) and the answer's room. The launcher runs the same
     # formula on the number it is handed (tests\context-tests.ps1 keeps the two in step) and the
     # status bar shows both numbers when Cline opens.
+    # The reserve is a share of the context ($ClineReservePercent, the Headroom box), never under
+    # $ClineContextReserve: Cline's log showed it still sending prompts ~4.5% over a 4096-token reserve.
     if ($Ctx -le 0) { return 0 }
     $half = [int64][Math]::Max(1024, [int][Math]::Ceiling($Ctx * 0.5))
-    return [Math]::Max($half, $Ctx - [int64]$ClineContextReserve)
+    $reserve = [Math]::Max([int64]$ClineContextReserve, [int64][Math]::Ceiling($Ctx * $ClineReservePercent / 100.0))
+    return [Math]::Max($half, $Ctx - $reserve)
+}
+
+function Update-CtxHint {
+    # What the chosen context costs and does, for the selected model, before anything starts.
+    $row = @(Get-SelectedConfigs) | Select-Object -First 1
+    if (-not $row) { $ui.CtxHint.Text = ''; return }
+    $ctx = 0
+    try { $ctx = Get-CtxOverride } catch { $ui.CtxHint.Text = $_.Exception.Message; return }
+    if (-not $ctx) { $c = Get-ArgValue $row.Cfg.args '--max-context'; if ($c -match '^\d+$') { $ctx = [int64]$c } }
+    if (-not $ctx) { $ui.CtxHint.Text = 'The config sets no --max-context: the engine picks its own.'; return }
+    $kv = Get-ArgValue $row.Cfg.args '--kv'
+    $cell = @{ 'int8' = 1056; 'q8_0' = 1056; 'k8v4' = 816; 'q4_0' = 576 }[[string]$kv]
+    $parts = @()
+    if ($cell) {
+        $gb = $ctx * 13 * $cell / 1e9
+        $resident = Get-ArgValue $row.Cfg.args '--kv-resident'
+        $parts += if ($resident) {
+            'KV cache ~{0:n1} GB of RAM (streamed; {1:n0} tokens of it in VRAM, whatever the context)' -f $gb, [int64]$resident
+        } else { 'KV cache ~{0:n1} GB of VRAM (not streamed: a longer context takes GPU memory from the experts)' -f $gb }
+    }
+    $parts += if ($ctx -le $TrainedContext) { 'no rope scaling (inside the trained 262,144)' }
+        else { 'past the trained 262,144: yarn x{0} is added - EXPERIMENTAL, the model computes slightly differently at every position' -f (Get-RopeScale $ctx) }
+    $parts += 'Cline is told {0:n0} tokens' -f (Get-ClineContext $ctx)
+    $hint = ($parts -join ';  ') + '.'
+    if ($row.Log -and (Test-Path -LiteralPath $row.Log)) {
+        $want = Select-String -LiteralPath $row.Log -Pattern 'add --vram-reserve-mib (\d+)' | Select-Object -Last 1
+        if ($want) { $hint += "  The engine log asked for --vram-reserve-mib $($want.Matches[0].Groups[1].Value) (GPU memory ran low)." }
+    }
+    $ui.CtxHint.Text = $hint
 }
 
 function Start-Cline($Row) {
@@ -709,7 +801,7 @@ function Start-Cline($Row) {
         return
     }
     $clArgs = "-NoExit -STA -ExecutionPolicy Bypass -File $(QPath $launcher) -Folder $(QPath $folder) -Model `"$($Row.Model)`" " +
-        "-StrataBase `"$(Get-BaseUrl $Row)`" -Context $raw -StrataRoot $(QPath (Get-Root))"
+        "-StrataBase `"$(Get-BaseUrl $Row)`" -Context $raw -ReservePercent $ClineReservePercent -StrataRoot $(QPath (Get-Root))"
     $thinking = [string]$ui.ThinkingBox.SelectedItem
     if ($ThinkingLevels -contains $thinking) { $clArgs += " -Thinking $thinking" }
     Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $clArgs -WorkingDirectory $folder
@@ -1291,6 +1383,15 @@ $ui.RootBox.Text = $settings.StrataRoot
 $ui.FolderBox.Text = $settings.ClineFolder
 $ui.ClineScriptBox.Text = $settings.ClineScript
 $ui.ExtraBox.Text = $settings.ExtraArgs
+$ui.VramBox.Text = $settings.VramReserve
+$ui.FitChk.IsChecked = [bool]$settings.FitMaxTokens
+foreach ($v in @('5', '10', '15', '20')) { [void]$ui.ReserveBox.Items.Add($v) }
+$ui.ReserveBox.SelectedItem = $(if (@('5', '10', '15', '20') -contains [string]$settings.ReservePercent) { [string]$settings.ReservePercent } else { '10' })
+$ClineReservePercent = [int]$ui.ReserveBox.SelectedItem
+$ui.ReserveBox.Add_SelectionChanged({ $script:ClineReservePercent = [int]$ui.ReserveBox.SelectedItem; Update-CtxHint })
+$ui.CtxBox.Add_SelectionChanged({ $window.Dispatcher.BeginInvoke([action]{ Update-CtxHint }) | Out-Null })
+$ui.CtxBox.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]{ Update-CtxHint })
+$ui.ConfigList.Add_SelectionChanged({ Update-CtxHint })
 $ui.OpenWebChk.IsChecked = [bool]$settings.OpenWeb
 $ui.MinChk.IsChecked = [bool]$settings.Minimized
 $ui.OllamaChk.IsChecked = [bool]$settings.UnloadOllama
@@ -1301,7 +1402,9 @@ $ui.DataBox.Text = $settings.DataFolder
 $ui.FitOnlyChk.IsChecked = [bool]$settings.FitOnly
 foreach ($v in @('5', '10', '15', '30', '60', '120')) { [void]$ui.SvcIdleBox.Items.Add($v) }
 $ui.SvcIdleBox.Text = $(if ($settings.ServiceIdle) { $settings.ServiceIdle } else { '15' })
-foreach ($v in @('(config)', '32768', '65536', '131072', '262144', '524288', '1048576')) { [void]$ui.CtxBox.Items.Add($v) }
+# Steps up to the trained 262144 run unscaled; past it Set-ContextArgs adds yarn, so those say so.
+foreach ($v in @('(config)', '32768', '65536', '131072', '204800', '262144', '393216  (yarn x1.5, experimental)',
+                 '524288  (yarn x2, experimental)', '1048576  (yarn x4, experimental)')) { [void]$ui.CtxBox.Items.Add($v) }
 $ui.CtxBox.Text = $(if ($settings.Context) { $settings.Context } else { '(config)' })
 foreach ($v in @('(default)') + $ThinkingLevels) { [void]$ui.ThinkingBox.Items.Add($v) }
 $ui.ThinkingBox.SelectedItem = $(if ($ThinkingLevels -contains $settings.Thinking) { $settings.Thinking } else { '(default)' })
@@ -1477,6 +1580,9 @@ $window.Add_Closing({
         Thinking     = [string]$ui.ThinkingBox.SelectedItem
         Context      = $(if ($ui.CtxBox.Text -eq '(config)') { '' } else { $ui.CtxBox.Text })
         ExtraArgs    = $ui.ExtraBox.Text
+        VramReserve  = $ui.VramBox.Text
+        FitMaxTokens = [bool]$ui.FitChk.IsChecked
+        ReservePercent = [string]$ui.ReserveBox.SelectedItem
         OpenWeb      = [bool]$ui.OpenWebChk.IsChecked
         Minimized    = [bool]$ui.MinChk.IsChecked
         UnloadOllama = [bool]$ui.OllamaChk.IsChecked
@@ -1495,6 +1601,7 @@ $window.Add_Closing({
 })
 
 Read-Configs
+Update-CtxHint
 Update-ServicePicker
 Read-Results
 Update-Health

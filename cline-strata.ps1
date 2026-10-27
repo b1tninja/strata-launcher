@@ -9,6 +9,9 @@ param(
     # Tokens Cline may fill before it compacts. 0 (default): what the server itself reports as its
     # context - an asked-for value larger than the engine's is refused by it, request after request.
     [int]$Context = 0,
+    # Share of the context held back from Cline (at least $ContextReserve tokens) - see Get-ClineContext.
+    [ValidateRange(1, 50)]
+    [int]$ReservePercent = 10,
     [string]$StrataRoot = 'M:\GITHUB\niko1221\strata',
     [string]$StartScript = 'run-orca-iq3_xxs.bat',
     [string]$StrataBase = 'http://127.0.0.1:8081',
@@ -20,7 +23,7 @@ $ErrorActionPreference = 'Continue'
 $DefaultFolder = 'D:\code'
 $ThinkingLevels = @('none', 'low', 'medium', 'high', 'xhigh')
 $ApiKey = 'local'
-$ContextReserve = 4096     # see Get-ClineContext
+$ContextReserve = 4096     # the least held back, whatever the percentage - see Get-ClineContext
 $FallbackContext = 32768   # what to assume when the server cannot say (engine not loaded yet)
 
 function Update-SessionPath {
@@ -53,10 +56,14 @@ function Test-StrataHealth {
 # context larger than the server's is the one setting that can never be too high. The reserve
 # covers the difference between Cline's estimate (~chars/4, without the ChatML template, the tool
 # schemas or the image tokens the engine counts), the server's own 8-token slack, and the answer.
+# That error is a share of the prompt, not a fixed number: with 4096 held back from 131072, Cline's
+# log shows it still sent 131118-132455-token prompts (~4.5% over what it believed), so the reserve
+# is $ReservePercent of the context (10%: ~7.7K left for the answer at 128K), never under 4096.
 function Get-ClineContext([int64]$Ctx) {
     if ($Ctx -le 0) { return 0 }
     $half = [int64][Math]::Max(1024, [int][Math]::Ceiling($Ctx * 0.5))
-    return [Math]::Max($half, $Ctx - [int64]$ContextReserve)
+    $reserve = [Math]::Max([int64]$ContextReserve, [int64][Math]::Ceiling($Ctx * $ReservePercent / 100.0))
+    return [Math]::Max($half, $Ctx - $reserve)
 }
 
 # What Cline may use, settled against what this server actually serves: an asked-for context

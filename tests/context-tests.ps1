@@ -28,11 +28,17 @@ if (-not (Test-Path -LiteralPath $launcher)) { throw "launcher not found next to
 Invoke-Expression (Get-FunctionText $launcher @('Get-ClineContext'))
 Invoke-Expression (Get-FunctionText $launcher @('Resolve-ClineContext'))
 $ContextReserve = 4096
+$ReservePercent = 10
 $FallbackContext = 32768
 Write-Host '--- Get-ClineContext (launcher)'
-Assert-Is (Get-ClineContext 131072) 126976 '131072 - 4096'
-Assert-Is (Get-ClineContext 1048576) 1044480 '1M - 4096'
-Assert-Is (Get-ClineContext 8192) 4096 '8192 - 4096'
+# Cline sent 131118-132455-token prompts against 126976 (a flat 4096 off 131072): the reserve is a share.
+Assert-Is (Get-ClineContext 131072) 117964 '131072 - 10% (13108)'
+Assert-Is (Get-ClineContext 262144) 235929 '262144 - 10%'
+Assert-Is (Get-ClineContext 1048576) 943718 '1M - 10%'
+Assert-Is (Get-ClineContext 8192) 4096 '8192: the 4096 floor beats 10%'
+$ReservePercent = 5
+Assert-Is (Get-ClineContext 131072) 124518 '5% headroom'
+$ReservePercent = 10
 Assert-Is (Get-ClineContext 4096) 2048 '4096 -> half, not 0'
 Assert-Is (Get-ClineContext 1024) 1024 'tiny context stays usable'
 Assert-Is (Get-ClineContext 0) 0 'unknown stays 0'
@@ -41,16 +47,19 @@ Assert-Is (Get-ClineContext 0) 0 'unknown stays 0'
 $testHealth = $null
 function Test-StrataHealth { [pscustomobject]@{ Context = $testHealth } }
 Write-Host '--- Resolve-ClineContext (launcher)'
-$testHealth = 131072; Assert-Is (Resolve-ClineContext 262144) 126976 'asked 262144 clamps to the server (the bug)'
-$testHealth = 131072; Assert-Is (Resolve-ClineContext 0) 126976 'asked nothing -> the server answers'
-$testHealth = 131072; Assert-Is (Resolve-ClineContext 65536) 61440 'a smaller ask is kept'
+$testHealth = 131072; Assert-Is (Resolve-ClineContext 262144) 117964 'asked 262144 clamps to the server (the bug)'
+$testHealth = 131072; Assert-Is (Resolve-ClineContext 0) 117964 'asked nothing -> the server answers'
+$testHealth = 131072; Assert-Is (Resolve-ClineContext 65536) 58982 'a smaller ask is kept'
 $testHealth = 0;      Assert-Is (Resolve-ClineContext 0) 28672 'server silent -> fallback, minus the reserve'
 $testHealth = 0;      Assert-Is (Resolve-ClineContext 32768) 28672 'server silent, asked 32768'
 
 # ---------------------------------------------------------------- strata-gui.ps1
 $gui = 'D:\code\strata-gui\strata-gui.ps1'
-Invoke-Expression (Get-FunctionText $gui @('Get-ArgValue', 'Get-RowContext', 'Get-ClineContext'))
+Invoke-Expression (Get-FunctionText $gui @('Get-ArgValue', 'Get-CtxOverride', 'Get-RowContext', 'Get-ClineContext',
+    'Get-RopeScale', 'Set-ArgValue', 'Remove-Arg', 'Set-ContextArgs'))
 $ClineContextReserve = 4096
+$ClineReservePercent = 10
+$TrainedContext = 262144
 function Clean-Path([string]$Text) { $Text }
 Write-Host '--- Get-RowContext (GUI)'
 $cfgRow = [pscustomobject]@{ Port = 8080; Cfg = [pscustomobject]@{ args = @('--max-context', '131072', '--kv', 'int8') } }
@@ -67,7 +76,24 @@ Assert-Is (Get-RowContext $cfgRow) 131072 '...but never the running server'
 $ui = [pscustomobject]@{ CtxBox = [pscustomobject]@{ Text = '(config)' } }
 $noCfg = [pscustomobject]@{ Port = 8081; Cfg = [pscustomobject]@{ args = @('--kv', 'int8') } }
 Assert-Is (Get-RowContext $noCfg) 0 'nothing known -> 0 (Open Cline refuses instead of guessing)'
-Assert-Is (Get-ClineContext 131072) 126976 'GUI reserve matches the launcher'
+Assert-Is (Get-ClineContext 131072) 117964 'GUI reserve matches the launcher'
+$ui = [pscustomobject]@{ CtxBox = [pscustomobject]@{ Text = '524288  (yarn x2, experimental)' } }
+Assert-Is (Get-RowContext $noCfg) 524288 'a labelled step reads as its number'
+
+Write-Host '--- Set-ContextArgs (GUI): rope scaling follows the context'
+function New-Args([string[]]$a) { $l = New-Object System.Collections.Generic.List[string]; foreach ($x in $a) { $l.Add($x) }; , $l }
+$l = New-Args @('--max-context', '131072', '--kv', 'int8'); Set-ContextArgs $l 262144
+Assert-Is ($l -join ' ') '--max-context 262144 --kv int8' '256K: inside the trained window, no rope flags'
+$l = New-Args @('--max-context', '131072'); Set-ContextArgs $l 524288
+Assert-Is ($l -join ' ') '--max-context 524288 --rope-scaling yarn --rope-scale 2' '512K: yarn x2 added'
+$l = New-Args @('--max-context', '131072'); Set-ContextArgs $l 393216
+Assert-Is ($l -join ' ') '--max-context 393216 --rope-scaling yarn --rope-scale 1.5' '384K: yarn x1.5'
+$l = New-Args @('--max-context', '1048576', '--rope-scaling', 'yarn', '--rope-scale', '4', '--kv', 'int8'); Set-ContextArgs $l 262144
+Assert-Is ($l -join ' ') '--max-context 262144 --kv int8' 'a 1M yarn config cut to 256K loses its scaling'
+$l = New-Args @('--max-context', '131072', '--rope-scaling', 'linear', '--rope-scale', '1.2'); Set-ContextArgs $l 524288
+Assert-Is ($l -join ' ') '--max-context 524288 --rope-scaling linear --rope-scale 2' 'an explicit method is kept, a too-small factor raised'
+$l = New-Args @('--rope-scaling', 'yarn', '--rope-scale', '4'); Set-ContextArgs $l 524288
+Assert-Is ($l -join ' ') '--rope-scaling yarn --rope-scale 4 --max-context 524288' 'a larger factor than needed is kept'
 
 # ------------------------------------------------- Ensure-ClineStrataAuth rewrites a stale window
 # Run the real function against a throwaway copy of Cline's settings, so a model registered with

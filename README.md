@@ -20,8 +20,16 @@ It expects a Strata checkout that has already been set up (i.e. it has `.venv`, 
 - **Launch** — lists every `strata-*.json` config with its model, quant, context, port and live
   server status (polled from `http://127.0.0.1:<port>/health`). Start/stop a model's server
   (its own console window), open its web page, open its log/config. Optional per-launch overrides
-  for `--max-context` and extra engine args — a patched config is written to `%TEMP%\strata-gui`,
-  your config files are never modified. Optionally unloads Ollama models first to free VRAM.
+  — a patched config is written to `%TEMP%\strata-gui`, your config files are never modified:
+  - **Max context**: steps up to the model's trained 262,144 run unscaled (a config's rope flags are
+    dropped there); the 384K/512K/1M steps add `--rope-scaling yarn --rope-scale <ctx/262144>`, which
+    Strata documents as experimental. A hint under the box shows the KV cache's RAM/VRAM cost
+    (~13.7 KB per token at int8), the rope state and the number Cline will be told.
+  - **VRAM reserve** (`--vram-reserve-mib`); the hint quotes the value the engine log asked for
+    when GPU memory ran low.
+  - **Shorten an answer that would not fit** (`fit_max_tokens`, on by default): the server caps
+    `max_tokens` to the room left instead of refusing the request.
+  - Extra engine args. Optionally unloads Ollama models first to free VRAM.
   **Open Cline** waits until the model is loaded, then starts `cline-strata.ps1` — the launcher
   that ships beside the GUI, taking `-Folder -Model -StrataBase -Context -StrataRoot [-Thinking]` —
   pointed at this server. Any script with that interface works; the path is a setting.
@@ -53,7 +61,10 @@ Settings (folder paths, Cline launcher, last selection, …) persist to
 - **Open Cline** hands Cline the context the model really has — the running server's `/health`
   `max_context`, else the `--max-context` this GUI would launch with, else the config's — and
   refuses to open rather than guess. The launcher then clamps that to what the server reports and
-  holds 4096 tokens back (both are `Get-ClineContext`), and writes the result into Cline's
+  holds back the **Headroom** share of it — 10% by default, never under 4096 tokens (both are
+  `Get-ClineContext`; `-ReservePercent` on the launcher). A flat 4096 was not enough: Cline's
+  estimate runs ~4-5% under the engine's count, and its log showed 131,118-132,455-token prompts
+  sent against a 131,072 window after it had been told 126,976. It writes the result into Cline's
   `models.json`, `providers.json` and legacy `globalState.json` *every* time, not only when the
   model is first registered — Cline re-imports `globalState.json` into its settings whenever it
   starts, so a stale window left there quietly undoes the other two (seen on a real machine: the
