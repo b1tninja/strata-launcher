@@ -122,7 +122,7 @@ Check ($go.Current.Name -eq 'Download Strata here' -and $go.Current.IsEnabled) '
 Press $go
 
 # 3. the download starts by itself once the window is up (after its confirmation)
-$win = Wait-Until { Top $p.Id | Where-Object { $_.Current.Name -eq 'Strata' } | Select-Object -First 1 } 60
+$win = Wait-Until { Top $p.Id | Where-Object { $_.Current.Name -eq 'Strata Launcher' } | Select-Object -First 1 } 60
 if (-not $win) { Shot 'no-main-window'; Done 'the main window did not appear' }
 $confirm = Confirm-Box $p.Id
 Log "confirm: $confirm"
@@ -139,6 +139,8 @@ Log 'setup steps:'; $steps | ForEach-Object { Log "    $_" }
 Check (($steps -join ' ') -match 'In C:\\Strata') 'Setup tab: Strata found'
 Check (($steps -join ' ') -match 'No NVIDIA or AMD graphics card') 'Setup tab: no GPU in the sandbox is reported'
 Check (($steps -join ' ') -match 'installs Python for your account') 'Setup tab: the PC check is offered next to Strata'
+$status = (ById $win 'StatusText').Current.Name
+Check ($status -notmatch 'No Strata in') "status bar no longer says Strata is missing ('$status')"
 Shot 'setup-tab'
 
 # 4. Git without winget: the portable MinGit

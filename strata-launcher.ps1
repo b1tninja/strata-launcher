@@ -144,7 +144,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Strata" Height="760" Width="1040" MinHeight="600" MinWidth="820"
+        Title="Strata Launcher" Height="760" Width="1040" MinHeight="600" MinWidth="820"
         WindowStartupLocation="CenterScreen" FontFamily="Segoe UI" FontSize="13">
   <Window.Resources>
     <Style TargetType="Button">
@@ -521,7 +521,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
         <TabItem Header="  Setup  " x:Name="SetupTab">
           <DockPanel Margin="12">
             <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#FF444444" Margin="0,0,0,10"
-                       Text="Everything Strata and this GUI need, one step at a time. Nothing is installed until you press a step's button; it says what it will do first, and long steps run in their own window. Strata's own setup (START-HERE.bat) installs Python, the engine and the model; this tab gets what it does not: Git, Strata itself, Node.js and Cline."/>
+                       Text="Everything Strata and Strata Launcher need, one step at a time. Nothing is installed until you press a step's button; it says what it will do first, and long steps run in their own window. Strata's own setup (START-HERE.bat) installs Python, the engine and the model; this tab gets what it does not: Git, Strata itself, Node.js and Cline."/>
             <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="120"/>
@@ -1874,8 +1874,9 @@ function Use-SetupFolders {
     $root = Clean-Path $ui.SetupRootBox.Text
     $data = Clean-Path $ui.SetupDataBox.Text
     if ($data) { $ui.DataBox.Text = $data; Set-StrataReg 'DataDir' $data }
-    if ((Test-StrataFolder $root) -and $root -ne (Clean-Path $ui.RootBox.Text)) {
-        $ui.RootBox.Text = $root
+    # also when it is the same folder: Strata may have just arrived in it (or its configs with a model)
+    if (Test-StrataFolder $root) {
+        if ($root -ne (Clean-Path $ui.RootBox.Text)) { $ui.RootBox.Text = $root }
         Read-Configs; Update-CtxHint; Update-SessionList; Update-ServicePicker; Read-Results
         $script:catalog = $null
     }
@@ -2088,15 +2089,17 @@ function Invoke-SetupAction([string]$Key, [string]$Label) {
 function Update-SetupWatch {
     # Re-check when a setup window finishes, and now and then while the tab is open.
     $done = @($script:setupProcs.Keys | Where-Object { -not (Test-SetupRunning $_) })
+    $failed = $null
     foreach ($k in $done) {
         $script:setupProcs.Remove($k)
         $result = Get-Content -LiteralPath (Get-SetupDoneFile $k) -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($result -like 'failed:*') { Set-Status "Setup step '$k' $result (its window has the details)." }
+        if ($result -like 'failed:*') { $failed = "Setup step '$k' $result (its window has the details)." }
     }
     if ($done.Count -or ($ui.Tabs.SelectedItem -eq $ui.SetupTab -and $script:svcTick % 10 -eq 0)) {
         if ($done -contains 'strata' -or $done -contains 'check' -or $done -contains 'model') { Use-SetupFolders }
         if ($ui.Tabs.SelectedItem -eq $ui.SetupTab) { Show-SetupSteps }
     }
+    if ($failed) { Set-Status $failed }   # after the re-read above, which sets its own status
 }
 
 # ------------------------------------------------------------------------------------ sessions
