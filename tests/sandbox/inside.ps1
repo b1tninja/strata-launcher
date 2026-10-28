@@ -92,7 +92,7 @@ Log "clean PC: winget=$([bool](Get-Command winget -EA SilentlyContinue)) git=$([
 # 1. install: the one-line web install a new user runs (it starts the launcher itself), or -Local: this repository's copy
 if ($Local) {
     Copy-Item -LiteralPath $src -Destination $gui -Recurse
-    Remove-Item -LiteralPath (Join-Path $gui 'strata-launcher.settings.json') -ErrorAction SilentlyContinue
+    foreach ($n in 'strata-launcher.settings.json', 'strata-gui.settings.json') { Remove-Item -LiteralPath (Join-Path $gui $n) -ErrorAction SilentlyContinue }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $gui 'install.ps1') -NoStart *>> "$out\install.txt"
 } else {
     Log "> irm $installUrl | iex"

@@ -1436,8 +1436,10 @@ function Update-EnvPath {
 }
 
 function Test-StrataFolder([string]$Path) {
-    return ($Path -and (Test-Path -LiteralPath (Join-Path $Path 'START-HERE.bat')) -and
-            (Test-Path -LiteralPath (Join-Path $Path 'serve\server.py')))
+    # [IO.Path]::Combine, not Join-Path: a remembered folder on a drive that is gone (a USB disk, a
+    # mapped drive) is just "not here", where Join-Path throws
+    return [bool]($Path -and (Test-Path -LiteralPath ([IO.Path]::Combine($Path, 'START-HERE.bat'))) -and
+                  (Test-Path -LiteralPath ([IO.Path]::Combine($Path, 'serve\server.py'))))
 }
 
 # The folders this GUI uses are kept per user in the registry (no admin rights), where the Cline
