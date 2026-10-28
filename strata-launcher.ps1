@@ -2094,6 +2094,8 @@ function Update-SetupWatch {
         $script:setupProcs.Remove($k)
         $result = Get-Content -LiteralPath (Get-SetupDoneFile $k) -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($result -like 'failed:*') { $failed = "Setup step '$k' $result (its window has the details)." }
+        # a look at GitHub taken while the step ran (no clone or upstream yet) is out of date now
+        if ($k -eq 'strata') { $script:updInfo = @{} }
     }
     if ($done.Count -or ($ui.Tabs.SelectedItem -eq $ui.SetupTab -and $script:svcTick % 10 -eq 0)) {
         if ($done -contains 'strata' -or $done -contains 'check' -or $done -contains 'model') { Use-SetupFolders }
