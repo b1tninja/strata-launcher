@@ -149,7 +149,9 @@ Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM
   before handing over to Strata — whose own download keeps the bar on.
 - Installs follow each project's own unattended route: python.org's `/quiet InstallAllUsers=0
   PrependPath=1` (plus `InstallLauncherAllUsers=0`: otherwise the `py` launcher installs for all users,
-  which needs an administrator and can leave a quiet install waiting), MinGit (the Git that git-for-windows offers for tools), Node.js's prebuilt zip,
+  which needs an administrator and can leave a quiet install waiting, and `Include_doc=0
+  Include_tcltk=0`: Strata uses neither, and in Windows Sandbox each Windows Installer package
+  waits about two minutes on its signature check), MinGit (the Git that git-for-windows offers for tools), Node.js's prebuilt zip,
   `npm install -g cline`, and Microsoft's `Microsoft.WinGet.Client` module for winget itself.
 - Every setup window records how it ended (`ok`, or `failed:` with the reason or exit code), so the
   Setup tab reports a failed step at once instead of waiting on it.
