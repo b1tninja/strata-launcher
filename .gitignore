@@ -4,3 +4,4 @@ strata-service.log
 strata-service.err.log
 .claude/
 strata-gui.settings.json
+*.lnk
