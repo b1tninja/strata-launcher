@@ -684,7 +684,7 @@ function Read-Configs {
     }
     if ($ui.ConfigList.SelectedItems.Count -eq 0 -and $script:configs.Count -gt 0) { $ui.ConfigList.SelectedIndex = 0 }
     if ($script:configs.Count -eq 0) {
-        Set-Status "No strata-*.json configs in $root. Run START-HERE.bat there first."
+        Set-Status "No model set up in $root yet: the Setup tab's model step chooses and downloads one."
     } else {
         Set-Status "$($script:configs.Count) model config(s) in $root"
     }
