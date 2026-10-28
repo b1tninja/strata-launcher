@@ -33,6 +33,16 @@ It expects a Strata checkout that has already been set up (i.e. it has `.venv`, 
   **Open Cline** waits until the model is loaded, then starts `cline-strata.ps1` — the launcher
   that ships beside the GUI, taking `-Folder -Model -StrataBase -Context -StrataRoot [-Thinking]` —
   pointed at this server. Any script with that interface works; the path is a setting.
+  **Sessions** save the conversation the engine holds (KV cache, recurrent state, its checkpoint)
+  to a file and restore it, also into a freshly started engine — Strata's own session files
+  (`POST /slots/0?action=save|restore`), on when the config has `slot_save_path` (Config > Files).
+  **Hibernate** saves `<config>-latest.bin` and stops the server; **Resume** starts it (or loads the
+  model), then restores that file; **Open Cline** can resume first. Measured here (NVFP4, RTX 5090,
+  Windows): a 27.5K-token conversation read cold in 16.0 s, saved in 0.58-0.67 s (626 MiB, ~24 KB per
+  token), restored in 0.48-0.56 s into a restarted engine, after which the next turn reused 27,545
+  tokens and read 19 (0.58 s). A file restores only into the same engine version with the same
+  context, KV and rope settings (the engine refuses others); Strata never deletes them. A save needs
+  free RAM (~355 MiB plus a 2.5 GiB floor here) and is refused when the PC is short of it.
 - **Benchmark** — runs `tools\strata_bench.py` against one or several selected models, one after
   another (starting their servers as needed, stopping them when done). Live output in the window.
 - **Results** — lists the folders in `bench\results`, shows a table of medians (decode tok/s,
@@ -62,7 +72,10 @@ It expects a Strata checkout that has already been set up (i.e. it has `.venv`, 
   the server starts with `--lazy` (doesn't load the model), the first request loads it, and it
   unloads after N idle minutes (`--idle-unload`) so VRAM is free while nothing uses it. The GUI
   shows the task state and offers load/unload-now and its log. The task is re-entered on the
-  same script with `-Service` — no second executable.
+  same script with `-Service` — no second executable. With **Save the conversation before
+  unloading** the runner does the idle unload itself (`-Hibernate`): after the idle time it saves
+  `<config>-latest.bin`, then unloads, logging to `strata-service.hibernate.log`; Resume or Open
+  Cline brings the conversation back (a request that reaches the lazy server first reads it cold).
 
 Settings (folder paths, Cline launcher, last selection, …) persist to
 `strata-gui.settings.json` next to the script; that file is machine-local and not part of the repo.
@@ -94,6 +107,11 @@ Settings (folder paths, Cline launcher, last selection, …) persist to
   a first request whose system prompt, tools and input are already too large. A guessed or stale
   number (the old 262144 default, or the same value parked in `globalState.json`, which Cline
   re-imports into `providers.json`) is therefore the one setting that cannot be too high.
+- Stopping a server this GUI did not start ends its whole launch chain (the `cmd` of a `run-*.bat` or
+  launch line, the venv's python and the interpreter it starts), so no window is left at
+  "Press any key"; anything outside that chain is left alone.
+- `tests\session-tests.ps1` checks the session-file helpers (file names, folder resolution, the
+  launch-chain lookup).
 - `tests\context-tests.ps1` checks that logic (it pulls the functions out of both scripts with the
   AST and drives them with stubs, so no GUI, no server and no Cline settings are touched):
   `powershell -NoProfile -ExecutionPolicy Bypass -File tests\context-tests.ps1`.

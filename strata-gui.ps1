@@ -7,7 +7,10 @@ param(
     [switch]$Service,
     [string]$Config,
     [int]$Port = 8080,
-    [int]$IdleSeconds = 900
+    [int]$IdleSeconds = 900,
+    # -Service -Hibernate: this runner unloads the idle model itself, saving the session first.
+    [switch]$Hibernate,
+    [string]$SessionName
 )
 
 $ErrorActionPreference = 'Continue'
@@ -44,10 +47,41 @@ if ($Service) {
     # This process waits for it, so the task is "Running" exactly while the server is.
     $py = Join-Path $StrataRoot '.venv\Scripts\python.exe'
     $server = Join-Path $StrataRoot 'serve\server.py'
-    $serverArgs = (QPath $server) + ' --engine strata --config ' + (QPath $Config) + " --port $Port --lazy --idle-unload $IdleSeconds"
+    # -Hibernate: the server's own --idle-unload would drop the conversation, so this runner watches
+    # /status and, after $IdleSeconds without a request, saves the session file and then unloads.
+    $idleArg = if ($Hibernate) { '' } else { " --idle-unload $IdleSeconds" }
+    $serverArgs = (QPath $server) + ' --engine strata --config ' + (QPath $Config) + " --port $Port --lazy$idleArg"
     $proc = Start-Process -FilePath $py -ArgumentList $serverArgs -WorkingDirectory $StrataRoot -WindowStyle Hidden `
         -RedirectStandardOutput $ServiceLog -RedirectStandardError $ServiceErrLog -PassThru
-    $proc.WaitForExit()
+    if (-not $Hibernate) { $proc.WaitForExit(); exit $proc.ExitCode }
+    $hlog = Join-Path $PSScriptRoot 'strata-service.hibernate.log'
+    $say = { param($m) Add-Content -LiteralPath $hlog -Value ("{0:yyyy-MM-dd HH:mm:ss}  {1}" -f (Get-Date), $m) }
+    & $say "watching http://127.0.0.1:$Port; unload after $IdleSeconds s idle, saving $SessionName first"
+    $base = "http://127.0.0.1:$Port"
+    $last = Get-Date
+    $seen = ''
+    while (-not $proc.HasExited) {
+        Start-Sleep -Seconds 15
+        try {
+            $h = Invoke-RestMethod "$base/health" -TimeoutSec 5
+            $st = Invoke-RestMethod "$base/status" -TimeoutSec 5
+        } catch { continue }
+        # Activity: a request running or queued, or the last request's counters moved since the last look.
+        $mark = "$($st.prompt_tokens)|$($st.generated)|$($st.phase)"
+        if (-not $h.loaded -or $st.busy -or $st.queued -or $mark -ne $seen) { $last = Get-Date; $seen = $mark; continue }
+        if (((Get-Date) - $last).TotalSeconds -lt $IdleSeconds) { continue }
+        try {
+            $r = Invoke-RestMethod -Method Post "$base/slots/0?action=save" -ContentType 'application/json' `
+                -Body (@{ filename = $SessionName } | ConvertTo-Json -Compress) -TimeoutSec 900
+            & $say "saved $($r.n_saved) tokens ($([int]($r.n_written / 1MB)) MiB) in $($r.timings.save_ms) ms"
+        } catch { & $say "save failed, unloading anyway: $($_.Exception.Message)" }
+        try {
+            $u = Invoke-RestMethod -Method Post "$base/unload" -ContentType 'application/json' -Body '{}' -TimeoutSec 120
+            & $say "unload: $($u.status)"
+        } catch { & $say "unload failed: $($_.Exception.Message)" }
+        $last = Get-Date
+    }
+    & $say "server exited ($($proc.ExitCode))"
     exit $proc.ExitCode
 }
 
@@ -73,6 +107,8 @@ $defaults = [ordered]@{
     ExtraArgs     = ''
     VramReserve   = ''
     FitMaxTokens  = $true
+    ResumeFirst   = $false
+    SvcHibernate  = $false
     ReservePercent = '10'
     OpenWeb       = $false
     Minimized     = $false
@@ -170,6 +206,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
 
       <TabControl Grid.Row="3" x:Name="Tabs">
         <TabItem Header="  Launch  ">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
           <StackPanel Margin="12">
             <TextBlock Text="Overrides (leave empty to use the config as it is; a changed config is written to %TEMP%\strata-gui)" FontWeight="SemiBold" Margin="0,0,0,8"/>
             <Grid Margin="0,0,0,6">
@@ -211,6 +248,32 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
             </WrapPanel>
 
             <Separator Margin="0,16,0,12"/>
+            <TextBlock Text="Sessions: the conversation the engine holds, saved to disk and restored in seconds instead of read again" FontWeight="SemiBold" Margin="0,0,0,8"/>
+            <Grid Margin="0,0,0,6">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Session file" Style="{StaticResource Label}"/>
+              <ComboBox Grid.Column="1" x:Name="SessionBox" IsEditable="True"
+                        ToolTip="A file in the config's session folder (slot_save_path). Type a new name to save under it."/>
+              <WrapPanel Grid.Column="2" Margin="8,0,0,0">
+                <Button x:Name="SessSaveBtn" Content="Save"/>
+                <Button x:Name="SessRestoreBtn" Content="Restore"/>
+                <Button x:Name="SessDeleteBtn" Content="Delete"/>
+                <Button x:Name="SessFolderBtn" Content="Folder" Margin="0"/>
+              </WrapPanel>
+            </Grid>
+            <WrapPanel Margin="110,0,0,0">
+              <Button x:Name="HibernateBtn" Content="Hibernate" FontWeight="SemiBold"
+                      ToolTip="Save the conversation as &lt;config&gt;-latest.bin, then stop the server."/>
+              <Button x:Name="ResumeBtn" Content="Resume" FontWeight="SemiBold"
+                      ToolTip="Start the server (or load the model), then restore &lt;config&gt;-latest.bin."/>
+            </WrapPanel>
+            <TextBlock x:Name="SessionHint" Style="{StaticResource Hint}"/>
+
+            <Separator Margin="0,16,0,12"/>
             <TextBlock Text="Cline" FontWeight="SemiBold" Margin="0,0,0,8"/>
             <Grid Margin="0,0,0,6">
               <Grid.ColumnDefinitions>
@@ -240,8 +303,10 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
                         ToolTip="Share of the context Cline is not told about, so it compacts before the server refuses a prompt (at least 4096 tokens). Cline undercounts by ~4-5%; 10% leaves room for the answer too."/>
               <Button x:Name="ClineBtn" Content="Open Cline" FontWeight="SemiBold"/>
             </StackPanel>
+            <CheckBox x:Name="ResumeChk" Margin="110,6,0,0" Content="Resume the latest session first (when the model has one)"/>
             <TextBlock Style="{StaticResource Hint}" Text="Starts the selected server if it is not running, waits until the model is loaded, then opens Cline in the folder pointed at that server."/>
           </StackPanel>
+          </ScrollViewer>
         </TabItem>
 
         <TabItem Header="  Benchmark  ">
@@ -374,7 +439,9 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
               <ComboBox x:Name="SvcIdleBox" Width="80" IsEditable="True"/>
               <TextBlock Text="minutes without requests" Style="{StaticResource Label}" Margin="8,0,0,0"/>
             </StackPanel>
-            <CheckBox x:Name="SvcLogonChk" Content="Start at Windows logon" Margin="130,0,0,12"/>
+            <CheckBox x:Name="SvcLogonChk" Content="Start at Windows logon" Margin="130,0,0,6"/>
+            <CheckBox x:Name="SvcHibernateChk" Margin="130,0,0,12"
+                      Content="Save the conversation before unloading (needs a session folder; Resume or Open Cline brings it back)"/>
             <WrapPanel Margin="0,0,0,12">
               <Button x:Name="SvcApplyBtn" Content="Install / update" FontWeight="SemiBold"/>
               <Button x:Name="SvcRemoveBtn" Content="Remove"/>
@@ -647,6 +714,24 @@ function Get-PortListeners([int]$Port) {
         Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -and $_ -ne 0 })
 }
 
+function Get-ServerLauncher([int]$ProcessId) {
+    # The outermost process of a Strata server's launch chain above $ProcessId: the venv's python.exe
+    # starts the real interpreter as a child, and a cmd.exe (run-*.bat, this GUI's own launch line)
+    # waits around both with "if errorlevel 1 pause". Killing only the listener leaves that window
+    # at "Press any key", so climb while the parent is part of the same launch.
+    $procs = @{}
+    foreach ($w in @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='cmd.exe'" -ErrorAction SilentlyContinue)) { $procs[[int]$w.ProcessId] = $w }
+    $id = $ProcessId
+    for ($i = 0; $i -lt 4; $i++) {
+        $me = $procs[$id]
+        if (-not $me) { break }
+        $parent = $procs[[int]$me.ParentProcessId]
+        if (-not $parent -or $parent.CommandLine -notmatch 'server\.py|run-[\w\.\-]+\.bat') { break }
+        $id = [int]$parent.ProcessId
+    }
+    return $id
+}
+
 function Test-StartedHere($Row) {
     # This GUI started a server for this config and its window is still open.
     $p = $script:started[$Row.Port]
@@ -666,7 +751,7 @@ function Stop-Row($Row) {
     if ((Test-ServiceRow $Row) -and -not (Test-StartedHere $Row)) { return (Stop-StrataService) }
     $ids = @()
     if (Test-StartedHere $Row) { $ids += $script:started[$Row.Port].Id }
-    $ids += Get-PortListeners $Row.Port
+    $ids += @(Get-PortListeners $Row.Port | ForEach-Object { Get-ServerLauncher $_ })
     foreach ($id in ($ids | Select-Object -Unique)) { & taskkill.exe /PID $id /T /F 2>$null | Out-Null }
     $script:started.Remove($Row.Port)
     $script:startedRow.Remove($Row.Port)
@@ -1167,12 +1252,18 @@ function Install-StrataService {
     $seconds = [int]([double]$minutes * 60)
     $taskArgs = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File $(QPath $PSCommandPath) -Service " +
         "-StrataRoot $(QPath (Get-Root)) -Config $(QPath $row.Path) -Port $($row.Port) -IdleSeconds $seconds"
+    $hibernate = [bool]$ui.SvcHibernateChk.IsChecked
+    if ($hibernate -and -not (Get-SessionDir $row)) {
+        [System.Windows.MessageBox]::Show("Saving before unloading needs a session folder: set slot_save_path for $($row.File) in Config > Files first.", 'Strata') | Out-Null
+        return
+    }
+    if ($hibernate) { $taskArgs += " -Hibernate -SessionName `"$(Get-LatestSessionName $row)`"" }
     $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $taskArgs -WorkingDirectory (Get-Root)
     $settingsSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
         -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
     $params = @{ TaskName = $ServiceTask; Action = $action; Settings = $settingsSet; Principal = $principal; Force = $true
-                 Description = "Strata $($row.Model) on demand (port $($row.Port), unloads after $minutes min idle). Managed by strata-gui.ps1." }
+                 Description = "Strata $($row.Model) on demand (port $($row.Port), unloads after $minutes min idle$(if ($hibernate) { ', saving the session first' })). Managed by strata-gui.ps1." }
     if ($ui.SvcLogonChk.IsChecked) { $params.Trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME" }
     try { Register-ScheduledTask @params -ErrorAction Stop | Out-Null } catch {
         [System.Windows.MessageBox]::Show("Could not register the scheduled task: $($_.Exception.Message)", 'Strata') | Out-Null
@@ -1281,6 +1372,147 @@ function Update-ServicePicker {
     $want = if ($svc) { $svc.File } elseif ($prev) { $prev } elseif ($settings.ServiceConfig) { Split-Path $settings.ServiceConfig -Leaf } else { $null }
     $ui.SvcModelBox.SelectedItem = $want
     if (-not $ui.SvcModelBox.SelectedItem -and $script:configs.Count -gt 0) { $ui.SvcModelBox.SelectedIndex = 0 }
+}
+
+# ------------------------------------------------------------------------------------ sessions
+# Strata's session files (POST /slots/0?action=save|restore, on when the config has slot_save_path):
+# the engine's state for the conversation it holds - KV cache, recurrent state, the deepest checkpoint -
+# written to disk and read back, also into a freshly started engine. A file only restores into the same
+# engine version with the same context, KV and rope settings (the engine checks and refuses otherwise),
+# and a client still sends its messages: a matching conversation then continues from the restored state.
+$script:slotOp = $null
+$script:resumePending = $null
+
+function Get-SessionDir($Row) {
+    if (-not $Row) { return $null }
+    $d = [string]$Row.Cfg.slot_save_path
+    if (-not $d) { return $null }
+    if (-not [IO.Path]::IsPathRooted($d)) {   # the server resolves it against the config's cwd
+        $cwd = if ($Row.Cfg.cwd) { [string]$Row.Cfg.cwd } else { Get-Root }
+        $d = Join-Path $cwd $d
+    }
+    return $d
+}
+
+function Get-LatestSessionName($Row) { [IO.Path]::GetFileNameWithoutExtension($Row.File) + '-latest.bin' }
+
+function Test-SessionName([string]$Name) {
+    # The engine wants one plain file name: no path, drive, stream, device name, leading dot or trailing dot/space.
+    return ($Name -match '^[A-Za-z0-9_][\w\.\-]*$' -and -not $Name.EndsWith('.') -and
+            $Name -notmatch '^(CON|PRN|AUX|NUL|COM\d|LPT\d)(\.|$)')
+}
+
+function Update-SessionList([switch]$KeepText) {
+    $row = @(Get-SelectedConfigs) | Select-Object -First 1
+    $dir = Get-SessionDir $row
+    $text = $ui.SessionBox.Text
+    $ui.SessionBox.Items.Clear()
+    foreach ($b in @($ui.SessSaveBtn, $ui.SessRestoreBtn, $ui.SessDeleteBtn, $ui.SessFolderBtn, $ui.HibernateBtn, $ui.ResumeBtn)) { $b.IsEnabled = [bool]$dir }
+    if (-not $row) { $ui.SessionHint.Text = ''; return }
+    if (-not $dir) {
+        $ui.SessionHint.Text = "Session files are off for $($row.File): set a session folder (slot_save_path) in Config > Files, then restart the server."
+        $ui.SessionBox.Text = ''
+        return
+    }
+    $files = @()
+    if (Test-Path -LiteralPath $dir) {
+        $files = @(Get-ChildItem -LiteralPath $dir -File | Where-Object { -not $_.Name.StartsWith('.') } | Sort-Object LastWriteTime -Descending)
+    }
+    foreach ($f in $files) { [void]$ui.SessionBox.Items.Add($f.Name) }
+    $ui.SessionBox.Text = $(if ($KeepText -and $text) { $text } else { Get-LatestSessionName $row })
+    Update-SessionHint
+}
+
+function Update-SessionHint {
+    $row = @(Get-SelectedConfigs) | Select-Object -First 1
+    $dir = Get-SessionDir $row
+    if (-not $dir) { return }
+    $name = $ui.SessionBox.Text.Trim()
+    $all = if (Test-Path -LiteralPath $dir) { @(Get-ChildItem -LiteralPath $dir -File | Where-Object { -not $_.Name.StartsWith('.') }) } else { @() }
+    $total = ($all | Measure-Object Length -Sum).Sum
+    $hint = "Folder $dir`: $($all.Count) file(s), {0:n1} GB." -f ($total / 1GB)
+    $f = $all | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+    if ($f) { $hint += "  $name`: {0:n0} MiB, saved {1:g}." -f ($f.Length / 1MB), $f.LastWriteTime }
+    elseif ($name -and -not (Test-SessionName $name)) { $hint += "  '$name' is not a plain file name (letters, digits, _ . - only)." }
+    elseif ($name) { $hint += "  $name does not exist yet: Save creates it." }
+    $hint += '  A file restores only into the same engine version with the same context, KV and rope settings; ~24 KB per token.'
+    $ui.SessionHint.Text = $hint
+}
+
+function Start-SlotAction($Row, [string]$Action, [string]$Name, [string]$Then) {
+    # POST /slots/0?action=...; runs in the background, Update-SlotOp (the timer) finishes it.
+    if ($script:slotOp) { Set-Status 'A session save or restore is still running.'; return }
+    if (-not (Get-SessionDir $Row)) { Set-Status "Session files are off for $($Row.File): set a session folder in Config > Files."; return }
+    if (-not (Test-SessionName $Name)) { Set-Status "'$Name' is not a plain file name (letters, digits, _ . - only)."; return }
+    if (-not (Test-RowReady $Row)) { Set-Status "$($Row.Model) is not loaded: nothing to $Action."; return }
+    $body = New-Object System.Net.Http.StringContent((@{ filename = $Name } | ConvertTo-Json -Compress), [Text.Encoding]::UTF8, 'application/json')
+    $script:slotOp = @{ Row = $Row; Action = $Action; Name = $Name; Then = $Then; T0 = Get-Date
+                        Task = $script:httpLong.PostAsync("http://127.0.0.1:$($Row.Port)/slots/0?action=$Action", $body) }
+    Set-Status ("{0} session {1}..." -f $(if ($Action -eq 'save') { 'Saving' } else { 'Restoring' }), $Name)
+}
+
+function Update-SlotOp {
+    $op = $script:slotOp
+    if (-not $op) { return }
+    $verb = if ($op.Action -eq 'save') { 'Saving' } else { 'Restoring' }
+    if (-not $op.Task.IsCompleted) { Set-Status ('{0} session {1}... ({2:n0} s)' -f $verb, $op.Name, ((Get-Date) - $op.T0).TotalSeconds); return }
+    $script:slotOp = $null
+    $ok = $false
+    if ($op.Task.Status -ne 'RanToCompletion') {
+        $msg = "$verb $($op.Name) failed: $($op.Task.Exception.InnerException.Message)"
+    } else {
+        $resp = $op.Task.Result
+        $code = [int]$resp.StatusCode
+        $j = $null
+        try { $j = $resp.Content.ReadAsStringAsync().Result | ConvertFrom-Json } catch {}
+        if ($code -eq 200 -and $j) {
+            $ok = $true
+            $msg = if ($op.Action -eq 'save') {
+                'Saved {0:n0} tokens ({1:n0} MiB) to {2} in {3:n2} s.' -f $j.n_saved, ($j.n_written / 1MB), $op.Name, ($j.timings.save_ms / 1000)
+            } else {
+                'Restored {0:n0} tokens ({1:n0} MiB) from {2} in {3:n2} s; a client that sends the same conversation continues from there.' -f $j.n_restored, ($j.n_read / 1MB), $op.Name, ($j.timings.restore_ms / 1000)
+            }
+        } else {
+            $why = if ($j -and $j.error) { $j.error.message } else { "HTTP $code" }
+            $msg = "$verb $($op.Name) failed (HTTP $code): $why"
+        }
+    }
+    switch ($op.Then) {
+        'stop' {
+            if ($ok) { [void](Stop-Row $op.Row); $msg += " Stopped $($op.Row.Model)." }
+            else { $msg += ' The server was left running so the conversation is not lost.' }
+        }
+        'cline' { Start-Cline $op.Row; if (-not $ok) { $msg += ' Cline opened anyway (it reads the conversation from the start).' } }
+    }
+    Set-Status $msg
+    Update-SessionList -KeepText
+}
+
+function Start-Resume($Row, [switch]$Cline) {
+    # Start the server or load the model as needed, then restore <config>-latest.bin (and open Cline).
+    $name = Get-LatestSessionName $Row
+    $dir = Get-SessionDir $Row
+    if (-not $dir -or -not (Test-Path -LiteralPath (Join-Path $dir $name))) { Set-Status "No $name to resume for $($Row.Model)."; return $false }
+    if (Test-RowReady $Row) { Start-SlotAction $Row 'restore' $name $(if ($Cline) { 'cline' } else { '' }); return $true }
+    $h = $script:health[$Row.Port]
+    if ($h -and $h.Up -and $h.Model -eq $Row.Model) { Request-Load $Row }
+    elseif (-not (Start-Server $Row)) { return $false }
+    $script:resumePending = @{ Row = $Row; Name = $name; Cline = [bool]$Cline; T0 = Get-Date }
+    Set-Status "Resuming $($Row.Model): $name is restored once the model has loaded..."
+    return $true
+}
+
+function Update-ResumePending {
+    $rp = $script:resumePending
+    if (-not $rp) { return }
+    Request-LoadIfIdle $rp.Row
+    if (Test-RowReady $rp.Row) {
+        $script:resumePending = $null
+        Start-SlotAction $rp.Row 'restore' $rp.Name $(if ($rp.Cline) { 'cline' } else { '' })
+    } elseif (((Get-Date) - $rp.T0).TotalMinutes -gt $LoadTimeoutMinutes) {
+        $script:resumePending = $null
+        Set-Status "$($rp.Row.Model) did not load in time; nothing was restored."
+    }
 }
 
 # ------------------------------------------------------------------------------------ files and logs
@@ -1401,6 +1633,7 @@ $TopFiles = @(
     @{ Key = 'tokenizer'; Dir = $true; Help = 'The tokenizer folder.' }
     @{ Key = 'cwd'; Dir = $true; Help = 'The engine''s working folder.' }
     @{ Key = 'log'; NoCheck = $true; Help = 'The engine log (created when the engine starts).' }
+    @{ Key = 'slot_save_path'; Dir = $true; NoCheck = $true; Help = 'Session files (Launch > Sessions): where saved conversations go. Created when missing; ~24 KB per token of conversation, never deleted by Strata - pick a drive with room. Empty: sessions off.' }
 )
 $script:cfgSchema = $null
 $script:cfgEdit = $null
@@ -2062,6 +2295,7 @@ $ui.CtxBox.Add_SelectionChanged({ $window.Dispatcher.BeginInvoke([action]{ Updat
 $ui.CtxBox.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]{ Update-CtxHint })
 $ui.ConfigList.Add_SelectionChanged({
     Update-CtxHint
+    Update-SessionList
     if ($ui.Tabs.SelectedItem -eq $ui.ConfigTab) { Open-ConfigEditor (@(Get-SelectedConfigs) | Select-Object -First 1) }
 })
 $ui.OpenWebChk.IsChecked = [bool]$settings.OpenWeb
@@ -2144,6 +2378,10 @@ $ui.ClineBtn.Add_Click({
     $folder = Clean-Path $ui.FolderBox.Text
     if (-not (Test-Path -LiteralPath $launcher)) { [System.Windows.MessageBox]::Show("Launcher script not found: $launcher", 'Strata') | Out-Null; return }
     if (-not (Test-Path -LiteralPath $folder -PathType Container)) { [System.Windows.MessageBox]::Show('Choose a project folder.', 'Strata') | Out-Null; return }
+    if ($ui.ResumeChk.IsChecked -and (Get-SessionDir $row) -and (Test-Path -LiteralPath (Join-Path (Get-SessionDir $row) (Get-LatestSessionName $row)))) {
+        [void](Start-Resume $row -Cline)
+        return
+    }
     if (Test-RowReady $row) { Start-Cline $row; return }
     if (-not (Start-Server $row)) { return }
     $script:clinePending = @{ Row = $row; T0 = Get-Date }
@@ -2221,6 +2459,52 @@ $ui.CfgTabs.Add_SelectionChanged({
     if ($e.OriginalSource -eq $ui.CfgTabs -and $ui.CfgTabs.SelectedIndex -eq 4 -and $script:cfgEdit) { $ui.CfgJson.Text = Get-ConfigText (Build-Config).Cfg }
 })
 
+$ui.ResumeChk.IsChecked = [bool]$settings.ResumeFirst
+$ui.SvcHibernateChk.IsChecked = [bool]$settings.SvcHibernate
+$ui.SessionBox.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]{ Update-SessionHint })
+$ui.SessSaveBtn.Add_Click({
+    $row = Get-Selected; if (-not $row) { return }
+    $name = $ui.SessionBox.Text.Trim()
+    $dir = Get-SessionDir $row
+    if ($dir -and (Test-Path -LiteralPath (Join-Path $dir $name))) {
+        if ([System.Windows.MessageBox]::Show("Replace $name?", 'Strata', 'YesNo') -ne 'Yes') { return }
+    }
+    Start-SlotAction $row 'save' $name ''
+})
+$ui.SessRestoreBtn.Add_Click({
+    $row = Get-Selected; if (-not $row) { return }
+    $name = $ui.SessionBox.Text.Trim()
+    $dir = Get-SessionDir $row
+    if (-not $dir -or -not (Test-Path -LiteralPath (Join-Path $dir $name))) { Set-Status "No session file $name."; return }
+    $msg = "Restore $name? The conversation the engine holds now is replaced (save it first if you want it back)."
+    if ([System.Windows.MessageBox]::Show($msg, 'Strata', 'YesNo') -ne 'Yes') { return }
+    Start-SlotAction $row 'restore' $name ''
+})
+$ui.SessDeleteBtn.Add_Click({
+    $row = Get-Selected; if (-not $row) { return }
+    $name = $ui.SessionBox.Text.Trim()
+    $path = Join-Path (Get-SessionDir $row) $name
+    if (-not (Test-SessionName $name) -or -not (Test-Path -LiteralPath $path)) { Set-Status "No session file $name."; return }
+    if ([System.Windows.MessageBox]::Show("Delete $name ($([int]((Get-Item -LiteralPath $path).Length / 1MB)) MiB)? This cannot be undone.", 'Strata', 'YesNo') -ne 'Yes') { return }
+    Remove-Item -LiteralPath $path
+    Set-Status "Deleted $name."
+    Update-SessionList
+})
+$ui.SessFolderBtn.Add_Click({
+    $row = Get-Selected; if (-not $row) { return }
+    $dir = Get-SessionDir $row
+    if (Test-Path -LiteralPath $dir) { Start-Process explorer.exe -ArgumentList (QPath $dir) } else { Set-Status "$dir does not exist yet (the server creates it)." }
+})
+$ui.HibernateBtn.Add_Click({
+    $row = Get-Selected; if (-not $row) { return }
+    if (-not (Test-RowReady $row)) { Set-Status "$($row.Model) is not loaded: nothing to hibernate."; return }
+    Start-SlotAction $row 'save' (Get-LatestSessionName $row) 'stop'
+})
+$ui.ResumeBtn.Add_Click({
+    $row = Get-Selected; if (-not $row) { return }
+    [void](Start-Resume $row)
+})
+
 $ui.SvcApplyBtn.Add_Click({ Install-StrataService })
 $ui.SvcRemoveBtn.Add_Click({ Remove-StrataService })
 $ui.SvcStartBtn.Add_Click({ Start-StrataService })
@@ -2261,6 +2545,8 @@ $timer.Add_Tick({
             }
         }
         Invoke-BenchStep
+        Update-SlotOp
+        Update-ResumePending
         $script:svcTick++
         if ($script:svcTick % 5 -eq 0 -and $ui.Tabs.SelectedItem -eq $ui.ServiceTab) { Update-ServiceStatus }
     } catch {
@@ -2289,6 +2575,8 @@ $window.Add_Closing({
         ExtraArgs    = $ui.ExtraBox.Text
         VramReserve  = $ui.VramBox.Text
         FitMaxTokens = [bool]$ui.FitChk.IsChecked
+        ResumeFirst  = [bool]$ui.ResumeChk.IsChecked
+        SvcHibernate = [bool]$ui.SvcHibernateChk.IsChecked
         ReservePercent = [string]$ui.ReserveBox.SelectedItem
         OpenWeb      = [bool]$ui.OpenWebChk.IsChecked
         Minimized    = [bool]$ui.MinChk.IsChecked
@@ -2309,6 +2597,7 @@ $window.Add_Closing({
 
 Read-Configs
 Update-CtxHint
+Update-SessionList
 Update-ServicePicker
 Read-Results
 Update-Health
