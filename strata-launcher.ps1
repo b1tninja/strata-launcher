@@ -10,12 +10,17 @@ param(
     [int]$IdleSeconds = 900,
     # -Service -Hibernate: this runner unloads the idle model itself, saving the session first.
     [switch]$Hibernate,
-    [string]$SessionName
+    [string]$SessionName,
+    # -FirstRun: ask again whether to use an existing Strata folder or set up a fresh one.
+    [switch]$FirstRun
 )
 
 $ErrorActionPreference = 'Continue'
-$SettingsPath = Join-Path $PSScriptRoot 'strata-gui.settings.json'
-$TempDir = Join-Path $env:TEMP 'strata-gui'
+$SettingsPath = Join-Path $PSScriptRoot 'strata-launcher.settings.json'
+# Named strata-gui before: carry its settings over once.
+$oldSettings = Join-Path $PSScriptRoot 'strata-gui.settings.json'
+if (-not (Test-Path -LiteralPath $SettingsPath) -and (Test-Path -LiteralPath $oldSettings)) { Copy-Item -LiteralPath $oldSettings -Destination $SettingsPath }
+$TempDir = Join-Path $env:TEMP 'strata-launcher'
 $ThinkingLevels = @('none', 'low', 'medium', 'high', 'xhigh')
 $LoadTimeoutMinutes = 30
 # Tokens held back from the context Cline is told about - see Get-ClineContext.
@@ -99,9 +104,9 @@ Add-Type -AssemblyName System.Net.Http
 
 # ------------------------------------------------------------------------------------ settings
 $defaults = [ordered]@{
-    StrataRoot    = 'M:\GITHUB\niko1221\strata'
+    StrataRoot    = ''
     ClineScript   = (Join-Path $PSScriptRoot 'cline-strata.ps1')
-    ClineFolder   = 'D:\code'
+    ClineFolder   = [Environment]::GetFolderPath('UserProfile')
     Thinking      = ''
     Context       = ''
     ExtraArgs     = ''
@@ -208,7 +213,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
         <TabItem Header="  Launch  ">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
           <StackPanel Margin="12">
-            <TextBlock Text="Overrides (leave empty to use the config as it is; a changed config is written to %TEMP%\strata-gui)" FontWeight="SemiBold" Margin="0,0,0,8"/>
+            <TextBlock Text="Overrides (leave empty to use the config as it is; a changed config is written to %TEMP%\strata-launcher)" FontWeight="SemiBold" Margin="0,0,0,8"/>
             <Grid Margin="0,0,0,6">
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="110"/>
@@ -512,6 +517,40 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
             </TabControl>
           </DockPanel>
         </TabItem>
+
+        <TabItem Header="  Setup  " x:Name="SetupTab">
+          <DockPanel Margin="12">
+            <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#FF444444" Margin="0,0,0,10"
+                       Text="Everything Strata and this GUI need, one step at a time. Nothing is installed until you press a step's button; it says what it will do first, and long steps run in their own window. Strata's own setup (START-HERE.bat) installs Python, the engine and the model; this tab gets what it does not: Git, Strata itself, Node.js and Cline."/>
+            <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="120"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Strata folder" Style="{StaticResource Label}"/>
+              <TextBox Grid.Column="1" x:Name="SetupRootBox" ToolTip="Where Strata is (or goes). An existing checkout is used as it is."/>
+              <Button Grid.Column="2" x:Name="SetupRootBrowse" Content="Browse..." Margin="8,0,0,0"/>
+            </Grid>
+            <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="120"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Model files" Style="{StaticResource Label}"/>
+              <TextBox Grid.Column="1" x:Name="SetupDataBox" ToolTip="Where setup puts the 60-190 GB of model files (its --data-dir). Default: Strata-data next to the Strata folder."/>
+              <Button Grid.Column="2" x:Name="SetupDataBrowse" Content="Browse..." Margin="8,0,0,0"/>
+            </Grid>
+            <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+              <Button x:Name="SetupRefreshBtn" DockPanel.Dock="Right" Content="Check again" Margin="8,0,0,0"/>
+              <TextBlock x:Name="SetupNote" TextWrapping="Wrap" Foreground="#FF444444" VerticalAlignment="Center"/>
+            </DockPanel>
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel x:Name="SetupSteps"/>
+            </ScrollViewer>
+          </DockPanel>
+        </TabItem>
       </TabControl>
     </Grid>
   </DockPanel>
@@ -519,6 +558,8 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
 '@
 
 $window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
+$AppIcon = Join-Path $PSScriptRoot 'assets\strata-launcher.ico'
+if (Test-Path -LiteralPath $AppIcon) { try { $window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]$AppIcon) } catch {} }
 $ui = @{}
 $xaml.SelectNodes('//*[@*[local-name()="Name"]]') | ForEach-Object {
     $name = $_.GetAttribute('Name', 'http://schemas.microsoft.com/winfx/2006/xaml')
@@ -611,10 +652,11 @@ function Read-Configs {
     $keep = @(Get-SelectedConfigs | ForEach-Object { $_.Path })
     if (-not $keep -and $settings.LastConfig) { $keep = @($settings.LastConfig) }
     $script:configs.Clear()
-    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-        Set-Status "Not a folder: $root"
+    if (-not (Test-StrataFolder $root)) {
+        Set-Status "No Strata in $root yet: the Setup tab downloads and sets it up."
         return
     }
+    Set-StrataReg 'StrataRoot' $root
     $files = Get-ChildItem -LiteralPath $root -Filter 'strata-*.json' -File |
         Where-Object { $_.Name -notlike '*.shared-settings.json' } |
         Sort-Object LastWriteTime -Descending
@@ -1263,7 +1305,7 @@ function Install-StrataService {
         -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
     $params = @{ TaskName = $ServiceTask; Action = $action; Settings = $settingsSet; Principal = $principal; Force = $true
-                 Description = "Strata $($row.Model) on demand (port $($row.Port), unloads after $minutes min idle$(if ($hibernate) { ', saving the session first' })). Managed by strata-gui.ps1." }
+                 Description = "Strata $($row.Model) on demand (port $($row.Port), unloads after $minutes min idle$(if ($hibernate) { ', saving the session first' })). Managed by strata-launcher.ps1." }
     if ($ui.SvcLogonChk.IsChecked) { $params.Trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME" }
     try { Register-ScheduledTask @params -ErrorAction Stop | Out-Null } catch {
         [System.Windows.MessageBox]::Show("Could not register the scheduled task: $($_.Exception.Message)", 'Strata') | Out-Null
@@ -1372,6 +1414,674 @@ function Update-ServicePicker {
     $want = if ($svc) { $svc.File } elseif ($prev) { $prev } elseif ($settings.ServiceConfig) { Split-Path $settings.ServiceConfig -Leaf } else { $null }
     $ui.SvcModelBox.SelectedItem = $want
     if (-not $ui.SvcModelBox.SelectedItem -and $script:configs.Count -gt 0) { $ui.SvcModelBox.SelectedIndex = 0 }
+}
+
+# ------------------------------------------------------------------------------------ setup (first run)
+# Finds or fetches everything this GUI drives. Strata's own START-HERE.bat installs Python, the engine
+# and the model (from Hugging Face, resumable); this gets what it does not: Git, the Strata checkout,
+# Node.js and Cline. Long steps run in a console of their own; the step list re-checks itself.
+$StrataRepo = 'https://github.com/Niko1221/Strata'
+$script:hw = $null
+$script:setupProcs = @{}
+
+Add-Type -Namespace StrataLauncher -Name Cpu -MemberDefinition '[DllImport("kernel32.dll")] public static extern bool IsProcessorFeaturePresent(uint feature);'
+
+function Update-EnvPath {
+    # Programs installed from another window since this one started: pick up their PATH entries.
+    $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = (@($machine, $user) | Where-Object { $_ }) -join ';'
+    $npm = Join-Path $env:APPDATA 'npm'
+    if (Test-Path -LiteralPath $npm) { $env:Path = "$npm;$env:Path" }
+}
+
+function Test-StrataFolder([string]$Path) {
+    return ($Path -and (Test-Path -LiteralPath (Join-Path $Path 'START-HERE.bat')) -and
+            (Test-Path -LiteralPath (Join-Path $Path 'serve\server.py')))
+}
+
+# The folders this GUI uses are kept per user in the registry (no admin rights), where the Cline
+# launcher and install.ps1 find them too: StrataRoot, DataDir, AppDir.
+$RegKey = 'HKCU:\Software\StrataLauncher'
+# Named strata-gui before (HKCU\Software\StrataGui, GuiDir): carry its values over once.
+if (-not (Test-Path $RegKey) -and (Test-Path 'HKCU:\Software\StrataGui')) {
+    try {
+        $old = Get-ItemProperty 'HKCU:\Software\StrataGui'
+        New-Item -Path $RegKey -Force | Out-Null
+        foreach ($n in 'StrataRoot', 'DataDir') { if ($old.$n) { Set-ItemProperty -Path $RegKey -Name $n -Value $old.$n } }
+    } catch {}
+}
+
+function Get-StrataReg([string]$Name) {
+    try { return [string](Get-ItemProperty -Path $RegKey -Name $Name -ErrorAction Stop).$Name } catch { return '' }
+}
+
+function Set-StrataReg([string]$Name, [string]$Value) {
+    if (-not $Value -or (Get-StrataReg $Name) -eq $Value) { return }
+    try {
+        if (-not (Test-Path $RegKey)) { New-Item -Path $RegKey -Force | Out-Null }
+        Set-ItemProperty -Path $RegKey -Name $Name -Value $Value
+    } catch {}
+}
+
+function Find-StrataRoots {
+    # Strata checkouts in the usual places: $env:STRATA_ROOT, beside this GUI, the user's folders, and
+    # <drive>:\Strata, <drive>:\*\Strata, <drive>:\*\*\Strata on every fixed drive (system folders skipped).
+    # Listed with .NET and stopped after a few seconds: PowerShell wildcards took ~30 s on a full PC.
+    $c = New-Object System.Collections.Generic.List[string]
+    if ($env:STRATA_ROOT) { $c.Add($env:STRATA_ROOT) }
+    if ($PSScriptRoot) { foreach ($n in 'Strata', 'strata') { $c.Add((Join-Path (Split-Path -Parent $PSScriptRoot) $n)) } }
+    foreach ($base in @([Environment]::GetFolderPath('UserProfile'), [Environment]::GetFolderPath('MyDocuments'))) { if ($base) { $c.Add((Join-Path $base 'Strata')) } }
+    $skip = @('Windows', 'Program Files', 'Program Files (x86)', 'ProgramData', '$Recycle.Bin', 'System Volume Information',
+              'Recovery', 'PerfLogs', 'AppData', 'node_modules', '.git', 'Config.Msi', '$WinREAgent')
+    $dirs = {
+        param([string]$Path)
+        try { @([IO.Directory]::EnumerateDirectories($Path) | Where-Object { $skip -notcontains [IO.Path]::GetFileName($_) }) } catch { @() }
+    }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    foreach ($d in [IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady }) {
+        $c.Add((Join-Path $d.RootDirectory.FullName 'Strata'))
+        foreach ($a in (& $dirs $d.RootDirectory.FullName)) {
+            if ($clock.Elapsed.TotalSeconds -gt 4) { break }
+            $c.Add((Join-Path $a 'Strata'))
+            foreach ($b in (& $dirs $a)) { if ([IO.Directory]::Exists((Join-Path $b 'Strata'))) { $c.Add((Join-Path $b 'Strata')) } }
+        }
+    }
+    $found = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $c) {
+        if (Test-StrataFolder $p) {
+            $r = (Resolve-Path -LiteralPath $p).Path
+            if (-not ($found | Where-Object { $_ -eq $r })) { $found.Add($r) }
+        }
+    }
+    return $found.ToArray()   # unrolled: callers wrap it in @()
+}
+
+function Find-StrataRoot { @(Find-StrataRoots) | Select-Object -First 1 }
+
+function Show-FirstRunDialog {
+    # Shown when no Strata folder is registered. One location: a folder with Strata is used as it is;
+    # an empty or new one is where the Setup tab downloads it. -> @{ Mode = 'existing'|'fresh'; Root; Data }
+    # or $null for "later".
+    [xml]$x = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Set up Strata" Width="700" SizeToContent="Height" WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
+        FontFamily="Segoe UI" FontSize="13">
+  <StackPanel Margin="18">
+    <TextBlock TextWrapping="Wrap" Margin="0,0,0,12" Text="Where is Strata? Point at a folder that has it, or at an empty (or new) folder to download it there: the Setup tab then installs everything Strata needs."/>
+    <TextBlock x:Name="FoundLabel" Text="Found on this PC:" FontWeight="SemiBold" Margin="0,0,0,4"/>
+    <ListBox x:Name="FoundList" MaxHeight="96" Margin="0,0,0,12"/>
+    <Grid Margin="0,0,0,4">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <Grid.RowDefinitions><RowDefinition/><RowDefinition Height="8"/><RowDefinition/></Grid.RowDefinitions>
+      <TextBlock Text="Strata folder" VerticalAlignment="Center" FontWeight="SemiBold"/>
+      <TextBox Grid.Column="1" x:Name="RootBox" Height="26" VerticalContentAlignment="Center"/>
+      <Button Grid.Column="2" x:Name="RootBrowse" Content="Browse..." Padding="12,3" Margin="8,0,0,0"/>
+      <TextBlock Grid.Row="2" Text="Model files" VerticalAlignment="Center"/>
+      <TextBox Grid.Row="2" Grid.Column="1" x:Name="DataBox" Height="26" VerticalContentAlignment="Center"/>
+      <Button Grid.Row="2" Grid.Column="2" x:Name="DataBrowse" Content="Browse..." Padding="12,3" Margin="8,0,0,0"/>
+    </Grid>
+    <TextBlock x:Name="Hint" Margin="110,4,0,16" TextWrapping="Wrap"/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button x:Name="Later" Content="Later" Padding="16,4" Margin="0,0,8,0" IsCancel="True"/>
+      <Button x:Name="Go" Content="Continue" Padding="16,4" IsDefault="True" FontWeight="SemiBold" MinWidth="170"/>
+    </StackPanel>
+  </StackPanel>
+</Window>
+'@
+    $w = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $x))
+    # The dialog's state lives in $script:frState: its event handlers run after this function returns.
+    $f = @{ Window = $w }
+    foreach ($n in 'FoundLabel', 'FoundList', 'RootBox', 'RootBrowse', 'DataBox', 'DataBrowse', 'Hint', 'Go') { $f[$n] = $w.FindName($n) }
+    $found = @(Find-StrataRoots)
+    foreach ($r in $found) { [void]$f.FoundList.Items.Add($r) }
+    if (-not $found.Count) { $f.FoundLabel.Visibility = 'Collapsed'; $f.FoundList.Visibility = 'Collapsed' }
+    $f.RootBox.Text = $(if ($found.Count) { $found[0] } else { Get-SuggestedStrataRoot })
+    $f.DataBox.Text = Get-DefaultDataDir $f.RootBox.Text
+    $script:frState = $f
+    $script:frResult = $null
+    $f.FoundList.Add_SelectionChanged({ if ($script:frState.FoundList.SelectedItem) { $script:frState.RootBox.Text = [string]$script:frState.FoundList.SelectedItem } })
+    $f.RootBox.Add_TextChanged({ Update-FirstRunHints })
+    $f.DataBox.Add_TextChanged({ Update-FirstRunHints })
+    $f.RootBrowse.Add_Click({
+        $cur = Clean-Path $script:frState.RootBox.Text
+        $p = Select-Folder $(if (Test-Path -LiteralPath $cur) { $cur } else { Split-Path $cur -Parent }) 'Choose the Strata folder: one that has Strata, or an empty one to download it into'
+        if ($p) {
+            # a folder that already has other things in it gets a new Strata folder inside it
+            $busy = @(Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue).Count -and -not (Test-StrataFolder $p)
+            $script:frState.RootBox.Text = $(if ($busy) { Join-Path $p 'Strata' } else { $p })
+        }
+    })
+    $f.DataBrowse.Add_Click({
+        $p = Select-Folder (Clean-Path $script:frState.DataBox.Text) 'Choose where the model files go (60-190 GB)'
+        if ($p) { $script:frState.DataBox.Text = $p }
+    })
+    $f.Go.Add_Click({
+        $s = $script:frState
+        $r = Clean-Path $s.RootBox.Text
+        $state = Get-FolderState $r
+        if ($state -eq 'other') { return }
+        $script:frResult = @{ Mode = $(if ($state -eq 'strata') { 'existing' } else { 'fresh' }); Root = $r; Data = Clean-Path $s.DataBox.Text }
+        $s.Window.DialogResult = $true
+    })
+    Update-FirstRunHints
+    [void]$w.ShowDialog()
+    return $script:frResult
+}
+
+function Get-FolderState([string]$Path) {
+    # strata: has Strata; empty: missing or empty (Strata can be downloaded into it); other: something else is there.
+    if (-not $Path) { return 'other' }
+    if (Test-StrataFolder $Path) { return 'strata' }
+    if (-not (Test-Path -LiteralPath $Path) -or -not @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue).Count) { return 'empty' }
+    return 'other'
+}
+
+function Update-FirstRunHints {
+    $s = $script:frState
+    $r = Clean-Path $s.RootBox.Text
+    $d = Clean-Path $s.DataBox.Text
+    $free = if ($d) { Get-FreeGB $d } else { $null }
+    $space = if ($null -ne $free) { " The model files need 60-190 GB; $free GB free for them." } else { '' }
+    switch (Get-FolderState $r) {
+        'strata' {
+            $s.Go.Content = 'Use this folder'; $s.Go.IsEnabled = $true; $s.Hint.Foreground = '#FF2E7D32'
+            $s.Hint.Text = "Strata is here$(if (Test-Path -LiteralPath (Join-Path $r '.venv')) { ' and set up' } else { '; the Setup tab runs its setup' })." + $space
+        }
+        'empty' {
+            $s.Go.Content = 'Download Strata here'; $s.Go.IsEnabled = $true; $s.Hint.Foreground = '#FF1565C0'
+            $s.Hint.Text = "No Strata here yet: the Setup tab downloads it into this folder (a few hundred MB)." + $space
+        }
+        default {
+            $s.Go.Content = 'Continue'; $s.Go.IsEnabled = $false; $s.Hint.Foreground = '#FFC62828'
+            $s.Hint.Text = $(if ($r) { 'This folder has other files and no Strata: choose a folder with Strata, or an empty one.' } else { 'Choose a folder.' })
+        }
+    }
+}
+
+function Get-SuggestedStrataRoot {
+    # A new checkout goes to the fixed drive with the most free space (the models need 60-190 GB).
+    $d = [IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } |
+        Sort-Object AvailableFreeSpace -Descending | Select-Object -First 1
+    return (Join-Path $d.RootDirectory.FullName 'Strata')
+}
+
+function Get-DefaultDataDir([string]$Root) {
+    # Where Strata's setup puts the models: the folder it remembered (%APPDATA%\Strata\settings.json),
+    # else Strata-data next to the Strata folder.
+    try {
+        $f = Join-Path $env:APPDATA 'Strata\settings.json'
+        $s = if (Test-Path -LiteralPath $f) { Get-Content -LiteralPath $f -Raw | ConvertFrom-Json }
+        if ($s.data_dir) { return [string]$s.data_dir }
+    } catch {}
+    if (-not $Root) { return '' }
+    return (Join-Path (Split-Path -Parent $Root) 'Strata-data')
+}
+
+function Get-HardwareFacts {
+    # The slow, unchanging checks: once per tab visit or "Check again".
+    $f = [ordered]@{}
+    $os = [Environment]::OSVersion.Version
+    $f.Windows = "Windows build $($os.Build)"
+    $f.WindowsOk = $os.Build -ge 19041
+    $f.Gpus = @()
+    $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if ($smi) {
+        foreach ($l in @(& $smi.Source --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits 2>$null)) {
+            $name, $mib, $drv = ($l -split ',\s*')
+            if ($name) { $f.Gpus += [pscustomobject]@{ Name = $name.Trim(); VramGB = [math]::Round([double]$mib / 1024); Driver = $drv.Trim(); Vendor = 'NVIDIA' } }
+        }
+    }
+    if (-not $f.Gpus) {
+        foreach ($v in @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)) {
+            if ($v.Name -match 'AMD|Radeon') { $f.Gpus += [pscustomobject]@{ Name = $v.Name; VramGB = 0; Driver = $v.DriverVersion; Vendor = 'AMD' } }
+            elseif ($v.Name -match 'NVIDIA') { $f.Gpus += [pscustomobject]@{ Name = $v.Name; VramGB = 0; Driver = '(nvidia-smi missing)'; Vendor = 'NVIDIA' } }
+        }
+    }
+    $f.RamGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+    $f.Avx2 = [StrataLauncher.Cpu]::IsProcessorFeaturePresent(40)   # PF_AVX2_INSTRUCTIONS_AVAILABLE
+    $f.Cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name.Trim()
+    return [pscustomobject]$f
+}
+
+function Get-FreeGB([string]$Path) {
+    try { return [math]::Round((New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($Path))).AvailableFreeSpace / 1GB) } catch { return $null }
+}
+
+function Get-ShortcutPaths {
+    @((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Strata Launcher.lnk'),
+      (Join-Path ([Environment]::GetFolderPath('Programs')) 'Strata Launcher.lnk'))
+}
+
+function Get-SetupSteps {
+    if (-not $script:hw) { $script:hw = Get-HardwareFacts }
+    Update-EnvPath
+    $hw = $script:hw
+    $root = Clean-Path $ui.SetupRootBox.Text
+    $data = Clean-Path $ui.SetupDataBox.Text
+    $steps = New-Object System.Collections.Generic.List[object]
+    $add = { param($key, $name, $state, $detail, $action, $action2)
+        $running = Test-SetupRunning $key
+        $steps.Add([pscustomobject]@{ Key = $key; Name = $name; State = $(if ($running) { 'running' } else { $state })
+                                      Detail = $(if ($running) { 'Running in its own window...' } else { $detail }); Action = $action; Action2 = $action2 }) }
+
+    $winget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+    & $add 'winget' 'Windows and winget' $(if (-not $hw.WindowsOk) { 'bad' } elseif ($winget) { 'ok' } else { 'warn' }) `
+        "$($hw.Windows); winget $(if ($winget) { 'is installed' } else { 'is missing. It is the easiest way to get Git and Node.js below (and Strata''s setup uses it for Python); without it they come as portable downloads. A new Windows account can take a few minutes to get it; Set up winget registers it now' })." `
+        $(if (-not $winget) { 'Set up winget' }) $(if (-not $winget) { 'Get App Installer' })
+
+    $g = $hw.Gpus | Select-Object -First 1
+    if (-not $g) {
+        & $add 'gpu' 'Graphics card and driver' 'bad' 'No NVIDIA or AMD graphics card found. Strata needs one (NVIDIA RTX 20 series or newer, or a supported Radeon), 12 GB of VRAM or more.' $null $null
+    } else {
+        $major = 0; [void][int]::TryParse(([string]$g.Driver -split '\.')[0], [ref]$major)
+        $state = if ($g.Vendor -eq 'NVIDIA' -and $major -lt 580) { 'bad' } elseif ($g.VramGB -and $g.VramGB -lt 12) { 'warn' } else { 'ok' }
+        $detail = "$($g.Name)$(if ($g.VramGB) { ", $($g.VramGB) GB VRAM" }), driver $($g.Driver)."
+        if ($g.Vendor -eq 'NVIDIA' -and $major -lt 580) { $detail += ' Strata needs NVIDIA driver 580 or newer: update it, restart, then check again.' }
+        elseif ($g.VramGB -and $g.VramGB -lt 12) { $detail += ' Under 12 GB of VRAM Strata runs, slowly.' }
+        if (@($hw.Gpus).Count -gt 1) { $detail += " ($(@($hw.Gpus).Count) cards)" }
+        & $add 'gpu' 'Graphics card and driver' $state $detail $(if ($state -eq 'bad') { 'Get the driver' }) $null
+    }
+
+    $free = if ($data) { Get-FreeGB $data } elseif ($root) { Get-FreeGB $root } else { $null }
+    $state = if (-not $hw.Avx2 -or $hw.RamGB -lt 32) { 'warn' } else { 'ok' }
+    if ($null -ne $free -and $free -lt 70) { $state = 'warn' }
+    $detail = "$($hw.RamGB) GB RAM, $($hw.Cpu)$(if (-not $hw.Avx2) { ' (no AVX2: setup builds a slow experimental engine)' })" +
+        $(if ($null -ne $free) { ", $free GB free for the model files" }) + '.'
+    if ($hw.RamGB -lt 32) { $detail += ' Strata wants 32 GB of RAM or more.' }
+    if ($null -ne $free -and $free -lt 70) { $detail += ' The smallest model needs ~70 GB of disk: choose a folder on a bigger drive.' }
+    & $add 'pc' 'Memory, CPU and disk' $state $detail $null $null
+
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    & $add 'git' 'Git' $(if ($git) { 'ok' } else { 'todo' }) `
+        $(if ($git) { "$((& $git.Source --version) -replace 'git version ', 'Git ')." } else { "Not installed. It fetches and updates Strata (without it, Strata comes as a zip that cannot update itself). $(if ($winget) { 'Installs Git for Windows with winget.' } else { 'Without winget: MinGit, the portable Git from git-for-windows, for your account only.' })" }) `
+        $(if (-not $git) { $(if ($winget) { 'Install Git' } else { 'Install Git (portable)' }) }) $null
+
+    if (Test-StrataFolder $root) {
+        $detail = "In $root."
+        $isRepo = Test-Path -LiteralPath (Join-Path $root '.git')
+        $state = 'ok'
+        if ($isRepo -and $git) {
+            $last = & $git.Source -C $root log -1 --format='%cd, %h' --date=short 2>$null
+            if ($last) { $detail += " Last commit $last." }
+            $u = Get-StrataUpdateInfo $root $git.Source
+            if ($u.Behind -gt 0) { $state = 'todo'; $detail += " $($u.Behind) new commit(s) on GitHub (newest $($u.Newest)): Update runs Strata's UPDATE.bat (git pull, then the engine, Python packages and model settings it needs)." }
+            elseif ($u.Checked) { $detail += ' Up to date with GitHub.' }
+            elseif ($u.Error) { $detail += " Could not check GitHub for updates ($($u.Error))." }
+        } elseif (-not $isRepo) {
+            $detail += if ($git) { ' This copy came as a zip, so it cannot update itself: Make it updatable turns it into a git clone of Strata in place (models, settings and .venv stay as they are) and brings it up to date.' }
+                else { ' This copy came as a zip, so it cannot update itself: with Git installed (below) it can be made updatable.' }
+            if ($git) { $state = 'todo' }
+        }
+        & $add 'strata' 'Strata' $state $detail $(if ($isRepo -and $git) { 'Update' } elseif ($git) { 'Make it updatable' }) $null
+    } elseif ($root -and (Test-Path -LiteralPath $root) -and @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue).Count) {
+        & $add 'strata' 'Strata' 'bad' "$root exists and is not a Strata folder: choose an empty or new folder above." $null $null
+    } else {
+        & $add 'strata' 'Strata' 'todo' "Not downloaded. It goes to $(if ($root) { $root } else { 'the folder above' }) ($StrataRepo)." 'Download Strata' $null
+    }
+
+    $haveStrata = Test-StrataFolder $root
+    $venv = $haveStrata -and (Test-Path -LiteralPath (Join-Path $root '.venv\Scripts\python.exe'))
+    & $add 'check' 'Python and a PC check' $(if ($venv) { 'ok' } elseif ($haveStrata) { 'todo' } else { 'wait' }) `
+        $(if ($venv) { 'Strata''s Python environment is ready.' } elseif ($haveStrata) { 'Strata''s setup installs Python for your account (if needed) and checks this PC. Nothing else is installed.' } else { 'After Strata is downloaded.' }) `
+        $(if ($haveStrata) { $(if ($venv) { 'Check again' } else { 'Check this PC' }) }) $null
+
+    $configs = if ($haveStrata) { @(Get-ChildItem -LiteralPath $root -Filter 'strata-*.json' -File | Where-Object { $_.Name -notlike '*.shared-settings.json' }) } else { @() }
+    & $add 'model' 'A model' $(if ($configs.Count) { 'ok' } elseif ($venv) { 'todo' } else { 'wait' }) `
+        $(if ($configs.Count) { "$($configs.Count) installed: $(($configs | ForEach-Object { $_.BaseName -replace '^strata-', '' }) -join ', ')." }
+          elseif ($venv) { "Not installed. Setup downloads 58-190 GB from Hugging Face (resumable) to $(if ($data) { $data } else { 'Strata-data' }). Choose one in the catalog, or let setup pick the recommended size for this PC's RAM." }
+          else { 'After the PC check.' }) `
+        $(if ($venv) { 'Choose a model...' }) $(if ($venv) { 'Recommended for this PC' })
+
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    $cline = Get-Command cline -ErrorAction SilentlyContinue
+    if (-not $cline) { $cline = Get-Item -Path (Join-Path $env:APPDATA 'npm\cline.cmd') -ErrorAction SilentlyContinue }
+    & $add 'cline' 'Node.js and Cline (optional)' $(if ($cline) { 'ok' } else { 'todo' }) `
+        $(if ($cline) { "Cline is installed$(if ($node) { ", Node.js $((& $node.Source --version))" })." }
+          elseif ($node) { "Node.js $((& $node.Source --version)) is installed; Cline (the coding agent Open Cline starts) is not." }
+          else { 'Not installed. Open Cline needs Node.js and Cline, the coding agent it starts against the local model.' }) `
+        $(if (-not $cline) { 'Install Cline' }) $null
+
+    $lnks = @(Get-ShortcutPaths | Where-Object { Test-Path -LiteralPath $_ })
+    & $add 'shortcut' 'Shortcut' $(if ($lnks.Count) { 'ok' } else { 'todo' }) `
+        $(if ($lnks.Count) { "Strata Launcher is on the $(($lnks | ForEach-Object { if ($_ -like "$([Environment]::GetFolderPath('Desktop'))*") { 'desktop' } else { 'Start menu' } }) -join ' and ')." } else { 'A Strata Launcher shortcut on the desktop and in the Start menu.' }) `
+        $(if (-not $lnks.Count) { 'Create shortcuts' }) $null
+    return $steps
+}
+
+function Show-SetupSteps {
+    $panel = $ui.SetupSteps
+    $panel.Children.Clear()
+    $marks = @{ ok = @([char]0x2713, '#FF2E7D32'); warn = @('!', '#FFE65100'); bad = @([char]0x2717, '#FFC62828')
+                todo = @([char]0x2022, '#FF1565C0'); wait = @([char]0x2022, '#FF9E9E9E'); running = @([char]0x2026, '#FF1565C0') }
+    $todo = $null
+    foreach ($st in (Get-SetupSteps)) {
+        if (-not $todo -and $st.State -in 'todo', 'bad') { $todo = $st }
+        $g = New-Object System.Windows.Controls.Grid
+        $g.Margin = '0,0,0,10'
+        foreach ($w in @(26, 200)) { $c = New-Object System.Windows.Controls.ColumnDefinition; $c.Width = $w; $g.ColumnDefinitions.Add($c) }
+        $c = New-Object System.Windows.Controls.ColumnDefinition; $c.Width = [System.Windows.GridLength]::new(1, 'Star'); $g.ColumnDefinitions.Add($c)
+        $c = New-Object System.Windows.Controls.ColumnDefinition; $c.Width = [System.Windows.GridLength]::Auto; $g.ColumnDefinitions.Add($c)
+        $m = New-Object System.Windows.Controls.TextBlock
+        $m.Text = $marks[$st.State][0]; $m.Foreground = $marks[$st.State][1]; $m.FontWeight = 'Bold'; $m.FontSize = 16; $m.VerticalAlignment = 'Top'
+        $n = New-Object System.Windows.Controls.TextBlock
+        $n.Text = $st.Name; $n.FontWeight = 'SemiBold'; $n.VerticalAlignment = 'Top'; $n.Margin = '0,2,0,0'
+        [System.Windows.Controls.Grid]::SetColumn($n, 1)
+        $d = New-Object System.Windows.Controls.TextBlock
+        $d.Text = $st.Detail; $d.TextWrapping = 'Wrap'; $d.Margin = '0,2,12,0'; $d.Foreground = '#FF444444'
+        [System.Windows.Controls.Grid]::SetColumn($d, 2)
+        $bp = New-Object System.Windows.Controls.StackPanel
+        $bp.Orientation = 'Horizontal'; $bp.VerticalAlignment = 'Top'
+        [System.Windows.Controls.Grid]::SetColumn($bp, 3)
+        foreach ($label in @($st.Action, $st.Action2)) {
+            if (-not $label) { continue }
+            $b = New-Object System.Windows.Controls.Button
+            $b.Content = $label; $b.Tag = "$($st.Key)|$label"; $b.IsEnabled = $st.State -ne 'running'
+            [System.Windows.Automation.AutomationProperties]::SetName($b, $label)
+            $b.Add_Click({ param($s, $e) $k, $l = ([string]$s.Tag).Split('|', 2); Invoke-SetupAction $k $l })
+            [void]$bp.Children.Add($b)
+        }
+        foreach ($x in @($m, $n, $d, $bp)) { [void]$g.Children.Add($x) }
+        [void]$panel.Children.Add($g)
+    }
+    $ui.SetupNote.Text = if ($todo) { "Next: $($todo.Name)." } else { 'Everything is in place. Start a model on the Launch tab.' }
+}
+
+# Put into every setup console: the no-winget routes install portable builds for the user (no admin
+# rights) and put them on the user's PATH.
+$SetupConsoleHelpers = @(
+    '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12'
+    '$ProgressPreference = ''SilentlyContinue''   # Invoke-WebRequest is many times slower with its progress bar'
+    'function Add-UserPath([string]$Dir) {'
+    '    $u = [Environment]::GetEnvironmentVariable(''Path'', ''User'')'
+    '    if (($u -split '';'') -notcontains $Dir) { [Environment]::SetEnvironmentVariable(''Path'', ((@($Dir) + @($u -split '';'' | Where-Object { $_ })) -join '';''), ''User''); Write-Host "Added $Dir to your PATH." }'
+    '    Update-EnvPath'
+    '}'
+    'function Get-File([string]$Url, [string]$To) {'
+    '    # Windows PowerShell''s own downloader; with its progress bar hidden ($ProgressPreference above) it is as fast as'
+    '    # curl.exe (0.5 s for 39 MB here) - with the bar shown, 30 MB took over 10 minutes in a clean Windows Sandbox.'
+    '    Write-Host "> download $Url"'
+    '    Invoke-WebRequest -UseBasicParsing $Url -OutFile $To'
+    '    Write-Host ("  {0:n1} MB" -f ((Get-Item -LiteralPath $To).Length / 1MB))'
+    '}'
+    'function Get-Zip([string]$Url, [string]$Into) {'
+    '    $zip = Join-Path $env:TEMP ([IO.Path]::GetFileName($Url))'
+    '    Get-File $Url $zip'
+    '    Remove-Item -LiteralPath $Into -Recurse -Force -ErrorAction SilentlyContinue'
+    '    Expand-Archive -LiteralPath $zip -DestinationPath $Into'
+    '    Remove-Item -LiteralPath $zip -ErrorAction SilentlyContinue'
+    '}'
+)
+
+$script:updInfo = @{}
+
+function Get-StrataUpdateInfo([string]$Root, [string]$Git) {
+    # How far the checkout is behind GitHub: a git fetch (network), so at most every 15 minutes per folder,
+    # or when "Check again" clears the cache. -> @{ Checked; Behind; Newest; Error }
+    $c = $script:updInfo[$Root]
+    if ($c -and ((Get-Date) - $c.At).TotalMinutes -lt 15) { return $c }
+    $r = @{ At = Get-Date; Checked = $false; Behind = 0; Newest = ''; Error = '' }
+    $err = & $Git -C $Root fetch --quiet 2>&1 | Out-String
+    if ($LASTEXITCODE) { $r.Error = ($err.Trim() -split "`n" | Select-Object -Last 1) }
+    else {
+        $n = & $Git -C $Root rev-list --count 'HEAD..@{u}' 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $r.Checked = $true; $r.Behind = [int]$n
+            if ($r.Behind) { $r.Newest = (& $Git -C $Root log -1 --format=%cd --date=short '@{u}' 2>$null) }
+        } else { $r.Error = 'the branch follows no remote branch' }
+    }
+    $script:updInfo[$Root] = $r
+    return $r
+}
+
+function Get-SetupDoneFile([string]$Key) { Join-Path $TempDir "setup-$Key.done" }
+
+function Test-SetupRunning([string]$Key) {
+    # Its window is open and it has not written its done marker (the window stays open afterwards).
+    $p = $script:setupProcs[$Key]
+    return ($p -and -not $p.HasExited -and -not (Test-Path -LiteralPath (Get-SetupDoneFile $Key)))
+}
+
+function Start-SetupConsole([string]$Key, [string]$Title, [string]$Body) {
+    # A visible PowerShell window that shows each command, runs it, and stays open with the result.
+    if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
+    $file = Join-Path $TempDir "setup-$Key.ps1"
+    $done = Get-SetupDoneFile $Key
+    Remove-Item -LiteralPath $done -ErrorAction SilentlyContinue
+    $transcript = Join-Path $TempDir "setup-$Key.log"
+    $text = "`$Host.UI.RawUI.WindowTitle = '$($Title -replace "'", "''")'`r`n`$ErrorActionPreference = 'Continue'`r`n" +
+        "try { Start-Transcript -LiteralPath '$($transcript -replace "'", "''")' -Force | Out-Null } catch {}`r`n" +
+        "function Update-EnvPath { `$m = [Environment]::GetEnvironmentVariable('Path', 'Machine'); `$u = [Environment]::GetEnvironmentVariable('Path', 'User'); `$env:Path = (@(`$m, `$u) | Where-Object { `$_ }) -join ';' }`r`n" +
+        ($SetupConsoleHelpers -join "`r`n") + "`r`n" +
+        # the done marker is written whatever happens, so the tab never waits on a step that failed:
+        # "ok" or "failed: <reason>", which the tab shows in its status line
+        "`$stepResult = 'ok'`r`ntry {`r`n" + $Body + "`r`n    if (`$LASTEXITCODE) { throw ""exit code `$LASTEXITCODE"" }`r`n} catch {`r`n    `$stepResult = 'failed: ' + `$_.Exception.Message`r`n" +
+        "    Write-Host ''`r`n    Write-Host `$stepResult -ForegroundColor Red`r`n} finally {`r`n" +
+        "    Set-Content -LiteralPath '$($done -replace "'", "''")' -Value `$stepResult`r`n    try { Stop-Transcript | Out-Null } catch {}`r`n}`r`n" +
+        "Write-Host ''`r`nWrite-Host `$(if (`$stepResult -eq 'ok') { 'Done. This window can be closed; the Setup tab checks again by itself.' } else { 'This step failed (above). The window can be closed; the Setup tab offers it again.' }) -ForegroundColor `$(if (`$stepResult -eq 'ok') { 'Green' } else { 'Yellow' })`r`n"
+    [IO.File]::WriteAllText($file, $text, (New-Object Text.UTF8Encoding $true))   # with a BOM: Windows PowerShell reads it as UTF-8
+    $script:setupProcs[$Key] = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -ArgumentList "-NoProfile -NoExit -ExecutionPolicy Bypass -File $(QPath $file)" -PassThru
+    Show-SetupSteps
+}
+
+function Confirm-Setup([string]$Text) { return ([System.Windows.MessageBox]::Show($Text, 'Strata setup', 'OKCancel') -eq 'OK') }
+
+function Use-SetupFolders {
+    # The Setup tab's folders become the GUI's: the Strata folder everything else reads, and the model folder.
+    $root = Clean-Path $ui.SetupRootBox.Text
+    $data = Clean-Path $ui.SetupDataBox.Text
+    if ($data) { $ui.DataBox.Text = $data; Set-StrataReg 'DataDir' $data }
+    if ((Test-StrataFolder $root) -and $root -ne (Clean-Path $ui.RootBox.Text)) {
+        $ui.RootBox.Text = $root
+        Read-Configs; Update-CtxHint; Update-SessionList; Update-ServicePicker; Read-Results
+        $script:catalog = $null
+    }
+}
+
+function Invoke-SetupAction([string]$Key, [string]$Label) {
+    $root = Clean-Path $ui.SetupRootBox.Text
+    $data = Clean-Path $ui.SetupDataBox.Text
+    $winget = 'winget install --exact --source winget --accept-package-agreements --accept-source-agreements --id'   # script text, run as written
+    switch ("$Key|$Label") {
+        'winget|Get App Installer' { Start-Process 'ms-windows-store://pdp/?productid=9NBLGGH4NNS1' }
+        'winget|Set up winget' {
+            # Microsoft's two documented routes (learn.microsoft.com/windows/package-manager/winget): register the
+            # App Installer that Windows ships (a new account gets it a few minutes after its first sign-in), and on
+            # Windows without the Store (Windows Sandbox, LTSC) install it with the Microsoft.WinGet.Client module.
+            if (-not (Confirm-Setup "Set up winget for your account?`n`n1. Register Windows' own App Installer (Add-AppxPackage -RegisterByFamilyName).`n2. If that does not do it: install Microsoft's Microsoft.WinGet.Client module from the PowerShell Gallery for your account and run its Repair-WinGetPackageManager, which downloads winget from Microsoft.")) { return }
+            Start-SetupConsole 'winget' 'Setting up winget' (@(
+                'Write-Host ''> Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe'''
+                'try { Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe -ErrorAction Stop } catch { Write-Host $_.Exception.Message -ForegroundColor Yellow }'
+                'Update-EnvPath'
+                'if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {'
+                '    Write-Host ''> Install-Module Microsoft.WinGet.Client -Scope CurrentUser; Repair-WinGetPackageManager'''
+                '    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null'
+                '    Install-Module -Name Microsoft.WinGet.Client -Force -Scope CurrentUser -Repository PSGallery -AllowClobber'
+                '    Import-Module Microsoft.WinGet.Client'
+                '    Repair-WinGetPackageManager -Latest -Force'
+                '    Update-EnvPath'
+                '}'
+                'if (Get-Command winget -ErrorAction SilentlyContinue) { Write-Host "winget $(winget --version) is ready." -ForegroundColor Green }'
+                'else { Write-Host ''winget is still not available: install App Installer from the Microsoft Store, or use the portable downloads in the Setup tab.'' -ForegroundColor Yellow }'
+            ) -join "`r`n")
+        }
+        'gpu|Get the driver' {
+            $vendor = ($script:hw.Gpus | Select-Object -First 1).Vendor
+            Start-Process $(if ($vendor -eq 'AMD') { 'https://www.amd.com/en/support/download/drivers.html' } else { 'https://www.nvidia.com/en-us/drivers/' })
+        }
+        'git|Install Git' {
+            if (-not (Confirm-Setup "Install Git for Windows with winget (Git.Git, ~60 MB)?`n`nWindows may ask for permission.")) { return }
+            Start-SetupConsole 'git' 'Installing Git' "Write-Host '> $winget Git.Git'`r`n$winget Git.Git"
+        }
+        'git|Install Git (portable)' {
+            if (-not (Confirm-Setup "Install MinGit, the portable Git from git-for-windows (GitHub, ~40 MB), for your account?`n`nIt goes to $env:LOCALAPPDATA\Programs\MinGit and onto your PATH; no administrator rights, no installer.")) { return }
+            Start-SetupConsole 'git' 'Installing Git (portable)' (@(
+                '$rel = Invoke-RestMethod -UseBasicParsing https://api.github.com/repos/git-for-windows/git/releases/latest'
+                '$asset = $rel.assets | Where-Object { $_.name -match ''^MinGit-[\d\.]+-64-bit\.zip$'' } | Select-Object -First 1'
+                'if (-not $asset) { throw ''No MinGit 64-bit zip in the latest Git for Windows release.'' }'
+                'Write-Host "MinGit $($rel.tag_name)"'
+                '$dir = Join-Path $env:LOCALAPPDATA ''Programs\MinGit'''
+                'Get-Zip $asset.browser_download_url $dir'
+                'Add-UserPath (Join-Path $dir ''cmd'')'
+                'git --version'
+            ) -join "`r`n")
+        }
+        'strata|Download Strata' {
+            if (-not $root) { Set-Status 'Choose a folder for Strata first.'; return }
+            $git = Get-Command git -ErrorAction SilentlyContinue
+            $how = if ($git) { "git clone $StrataRepo.git" } else { 'the zip of its main branch (Git is not installed, so it cannot update itself later)' }
+            if (-not (Confirm-Setup "Download Strata into`n$root`n`nusing $how. It is a few hundred MB; the model comes later.")) { return }
+            $q = $root -replace "'", "''"
+            $body = if ($git) {
+                "Write-Host '> git clone $StrataRepo.git `"$q`"'`r`n& git clone '$StrataRepo.git' '$q'"
+            } else {
+                "`$zip = Join-Path `$env:TEMP 'strata-main.zip'; `$tmp = Join-Path `$env:TEMP 'strata-main'`r`n" +
+                "Get-File '$StrataRepo/archive/refs/heads/main.zip' `$zip`r`n" +
+                "Remove-Item `$tmp -Recurse -Force -ErrorAction SilentlyContinue; Expand-Archive `$zip `$tmp`r`n" +
+                "New-Item -ItemType Directory -Force '$q' | Out-Null`r`n" +
+                "Get-ChildItem (Get-ChildItem `$tmp -Directory | Select-Object -First 1).FullName -Force | Move-Item -Destination '$q'`r`n" +
+                "Remove-Item `$zip, `$tmp -Recurse -Force -ErrorAction SilentlyContinue; Write-Host 'Unpacked into $q'"
+            }
+            Start-SetupConsole 'strata' 'Downloading Strata' $body
+        }
+        'strata|Make it updatable' {
+            $msg = "Make $root a git clone of $StrataRepo, then update it?`n`n" +
+                "Its Strata files become the newest version from GitHub; files git does not track (models, strata-*.json configs, .venv, logs) are left as they are. Then Strata's UPDATE.bat brings the engine and packages up to date. Stop its servers first."
+            if (-not (Confirm-Setup $msg)) { return }
+            $script:updInfo.Remove($root)
+            Start-SetupConsole 'strata' 'Making Strata updatable' (@(
+                "Set-Location -LiteralPath '$($root -replace "'", "''")'"
+                'Write-Host ''> git init; git remote add origin; git fetch origin main; git reset origin/main; git checkout -- .'''
+                '& git init --quiet --initial-branch=main'
+                "& git remote add origin '$StrataRepo.git'"
+                '& git fetch --quiet origin main; if ($LASTEXITCODE) { throw ''git fetch failed'' }'
+                '# the branch and index become origin/main; tracked files are then brought to it, untracked ones stay'
+                '& git reset --quiet origin/main'
+                '& git branch --quiet --set-upstream-to=origin/main main'
+                '& git checkout -- .'
+                'Write-Host ''> UPDATE.bat'''
+                '$null | & cmd.exe /c UPDATE.bat | Out-Host'
+            ) -join "`r`n")
+        }
+        'strata|Update' {
+            if (-not (Confirm-Setup "Update Strata in $root with its own UPDATE.bat?`n`nIt runs git pull, then gets the engine, Python packages and model settings the new version needs. The model files are not touched. Stop its servers first.")) { return }
+            $script:updInfo.Remove($root)
+            # stdin from nothing: UPDATE.bat ends with "pause", which then returns at once
+            Start-SetupConsole 'strata' 'Updating Strata' "Set-Location -LiteralPath '$($root -replace "'", "''")'`r`nWrite-Host '> UPDATE.bat'`r`n`$null | & cmd.exe /c UPDATE.bat | Out-Host"
+        }
+        { $_ -in 'check|Check this PC', 'check|Check again' } {
+            if (-not (Confirm-Setup "Run Strata's setup check (START-HERE.bat --check) in`n$root`n`nIt installs Python for your account if it is missing, creates Strata's .venv there, and prints what this PC can run. It downloads no model.")) { return }
+            # Without winget, START-HERE.bat downloads the Python it pins with Invoke-WebRequest and its progress bar
+            # on, which crawls (it ran out a 25-minute limit in Windows Sandbox). Fetch that same installer - its URL
+            # read from this START-HERE.bat, so a new pin is followed - with the bar hidden, install it with
+            # Strata's own options, and START-HERE.bat then finds Python and goes on.
+            $pyUrl = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'START-HERE.bat') -Raw -ErrorAction SilentlyContinue),
+                'https://www\.python\.org/ftp/python/[\d\.]+/python-[\d\.]+-amd64\.exe').Value
+            $pre = if ($pyUrl) { @(
+                '# Python 3.10+ already here (the py launcher, python on PATH, or a per-user install), or winget to get it?'
+                '$havePy = $false'
+                '# py, then python; not the Microsoft Store stub (WindowsApps), which only opens the Store'
+                'foreach ($cmd in @(@(''py'', ''-3''), @(''python''))) {'
+                '    $exe = Get-Command $cmd[0] -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch ''\\WindowsApps\\'' } | Select-Object -First 1'
+                '    if (-not $exe) { continue }'
+                '    & $exe.Source @($cmd | Select-Object -Skip 1) -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>$null'
+                '    if ($LASTEXITCODE -eq 0) { $havePy = $true; break }'
+                '}'
+                'if (-not $havePy) { $havePy = [bool](Get-ChildItem (Join-Path $env:LOCALAPPDATA ''Programs\Python\Python3*\python.exe'') -ErrorAction SilentlyContinue) }'
+                'if (-not $havePy -and -not (Get-Command winget -ErrorAction SilentlyContinue)) {'
+                '    Write-Host ''Installing the Python that Strata pins (python.org), for your account:'''
+                '    $setup = Join-Path $env:TEMP ''strata-python-setup.exe'''
+                "    Get-File '$pyUrl' `$setup"
+                '    # Strata''s options, plus InstallLauncherAllUsers=0 (the py launcher otherwise installs for all users, which'
+                '    # needs an administrator and leaves a quiet install waiting) and no docs or Tcl/Tk (Strata uses neither; each'
+                '    # is one more Windows Installer package, minutes each in Windows Sandbox). Log: %TEMP%\strata-python-setup.log.'
+                '    $pyArgs = ''/quiet InstallAllUsers=0 InstallLauncherAllUsers=0 PrependPath=1 Include_launcher=1 Include_test=0 Include_doc=0 Include_tcltk=0 /log "'' + (Join-Path $env:TEMP ''strata-python-setup.log'') + ''"'''
+                '    Write-Host "> python setup $pyArgs"'
+                '    # the installer itself, not -Wait: Windows PowerShell''s -Wait also waits for every process the installer leaves behind'
+                '    $r = Start-Process -FilePath $setup -ArgumentList $pyArgs -PassThru'
+                '    if (-not $r.WaitForExit(1200000)) { throw ''the Python installer did not finish in 20 minutes (see %TEMP%\strata-python-setup.log)'' }'
+                '    if ($r.ExitCode) { throw "the Python installer ended with $($r.ExitCode) (see %TEMP%\strata-python-setup.log)" }'
+                '    Update-EnvPath'
+                '}'
+            ) -join "`r`n" } else { '' }
+            Start-SetupConsole 'check' 'Strata: checking this PC' ($pre + "`r`nSet-Location -LiteralPath '$($root -replace "'", "''")'`r`nWrite-Host '> START-HERE.bat --check'`r`n`$null | & cmd.exe /c START-HERE.bat --check | Out-Host")
+        }
+        'model|Choose a model...' {
+            Use-SetupFolders
+            $ui.Tabs.SelectedItem = $ui.ModelsTab
+            Read-Catalog
+        }
+        'model|Recommended for this PC' {
+            $extra = if ($data -and $data -ne $root) { " --data-dir `"$data`"" } else { '' }
+            $extraPs = if ($extra) { " --data-dir '$($data -replace "'", "''")'" } else { '' }
+            $msg = "Run Strata's setup with its recommended model for this PC's RAM (START-HERE.bat --yes --no-start$extra)?`n`n" +
+                "It downloads 58-190 GB from Hugging Face into $(if ($data) { $data } else { 'Strata-data' }); that can take hours, and it continues where it stopped if interrupted."
+            if (-not (Confirm-Setup $msg)) { return }
+            Use-SetupFolders
+            Start-SetupConsole 'model' 'Strata: installing the recommended model' "Set-Location -LiteralPath '$($root -replace "'", "''")'`r`nWrite-Host '> START-HERE.bat --yes --no-start$($extra -replace "'", "''")'`r`n`$null | & cmd.exe /c START-HERE.bat --yes --no-start$extraPs | Out-Host"
+        }
+        'cline|Install Cline' {
+            $node = Get-Command node -ErrorAction SilentlyContinue
+            $haveWinget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+            $nodeHow = if ($node) { '' } elseif ($haveWinget) { 'Node.js LTS (winget, OpenJS.NodeJS.LTS) and ' }
+                else { "Node.js LTS (the portable zip from nodejs.org, into $env:LOCALAPPDATA\Programs\nodejs and onto your PATH) and " }
+            if (-not (Confirm-Setup "Install $($nodeHow)Cline (npm install -g cline) for your account?")) { return }
+            $body = ''
+            if (-not $node -and $haveWinget) { $body += "Write-Host '> $winget OpenJS.NodeJS.LTS'`r`n$winget OpenJS.NodeJS.LTS`r`nUpdate-EnvPath`r`n" }
+            elseif (-not $node) {
+                $body += (@(
+                    '# the newest LTS release, as nodejs.org lists it'
+                    '# into a variable first: piped straight on, Windows PowerShell passes the whole JSON array as one object'
+                    '$releases = Invoke-RestMethod -UseBasicParsing https://nodejs.org/dist/index.json'
+                    '$v = ($releases | Where-Object { $_.lts } | Select-Object -First 1).version'
+                    'if ($v -notmatch ''^v\d+\.\d+\.\d+$'') { throw "Unexpected Node.js version from nodejs.org: $v" }'
+                    'Write-Host "Node.js $v (LTS)"'
+                    '$base = Join-Path $env:LOCALAPPDATA ''Programs'''
+                    'Get-Zip "https://nodejs.org/dist/$v/node-$v-win-x64.zip" (Join-Path $base ''nodejs-unpack'')'
+                    'Remove-Item -LiteralPath (Join-Path $base ''nodejs'') -Recurse -Force -ErrorAction SilentlyContinue'
+                    'Move-Item -LiteralPath (Join-Path $base "nodejs-unpack\node-$v-win-x64") -Destination (Join-Path $base ''nodejs'')'
+                    'Remove-Item -LiteralPath (Join-Path $base ''nodejs-unpack'') -Recurse -Force'
+                    'Add-UserPath (Join-Path $base ''nodejs'')'
+                    'Add-UserPath (Join-Path $env:APPDATA ''npm'')   # where npm install -g puts cline'
+                    'node --version'
+                ) -join "`r`n") + "`r`n"
+            }
+            $body += "Write-Host '> npm install -g cline'`r`n& npm install -g cline | Out-Host"
+            Start-SetupConsole 'cline' 'Installing Cline' $body
+        }
+        'shortcut|Create shortcuts' {
+            $ws = New-Object -ComObject WScript.Shell
+            foreach ($path in (Get-ShortcutPaths)) {
+                $l = $ws.CreateShortcut($path)
+                $l.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+                $l.Arguments = "-NoProfile -WindowStyle Hidden -STA -ExecutionPolicy Bypass -File $(QPath $PSCommandPath)"
+                $l.WorkingDirectory = $PSScriptRoot
+                $l.WindowStyle = 7
+                $l.Description = 'Launch, benchmark and set up Strata models'
+                $l.IconLocation = $(if (Test-Path -LiteralPath $AppIcon) { "$AppIcon,0" } else { "$env:SystemRoot\System32\imageres.dll,144" })
+                $l.Save()
+                # the same shortcut under this tool's earlier name
+                Remove-Item -LiteralPath (Join-Path (Split-Path $path -Parent) 'Strata GUI.lnk') -ErrorAction SilentlyContinue
+            }
+            Set-Status 'Created Strata Launcher shortcuts on the desktop and in the Start menu.'
+        }
+    }
+    Show-SetupSteps
+}
+
+function Update-SetupWatch {
+    # Re-check when a setup window finishes, and now and then while the tab is open.
+    $done = @($script:setupProcs.Keys | Where-Object { -not (Test-SetupRunning $_) })
+    foreach ($k in $done) {
+        $script:setupProcs.Remove($k)
+        $result = Get-Content -LiteralPath (Get-SetupDoneFile $k) -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($result -like 'failed:*') { Set-Status "Setup step '$k' $result (its window has the details)." }
+    }
+    if ($done.Count -or ($ui.Tabs.SelectedItem -eq $ui.SetupTab -and $script:svcTick % 10 -eq 0)) {
+        if ($done -contains 'strata' -or $done -contains 'check' -or $done -contains 'model') { Use-SetupFolders }
+        if ($ui.Tabs.SelectedItem -eq $ui.SetupTab) { Show-SetupSteps }
+    }
 }
 
 # ------------------------------------------------------------------------------------ sessions
@@ -2281,7 +2991,18 @@ function Select-Folder([string]$Initial, [string]$Description) {
     return $null
 }
 
-$ui.RootBox.Text = $settings.StrataRoot
+# The Strata folder: the registered one (HKCU\Software\StrataLauncher) while it is still a checkout, then
+# the one an older version saved in its settings file; with neither, the first-run dialog asks:
+# an existing checkout, or a fresh install that the Setup tab carries out.
+$firstChoice = $null
+$foundRoot = foreach ($c in @((Get-StrataReg 'StrataRoot'), [string]$settings.StrataRoot)) { if (Test-StrataFolder (Clean-Path $c)) { Clean-Path $c; break } }
+if ($FirstRun) { $foundRoot = $null }
+if (-not $foundRoot -and -not $StrataRoot) {
+    $firstChoice = Show-FirstRunDialog
+    if ($firstChoice -and $firstChoice.Mode -eq 'existing') { $foundRoot = $firstChoice.Root }
+}
+$ui.SetupRootBox.Text = $(if ($foundRoot) { $foundRoot } elseif ($firstChoice) { $firstChoice.Root } else { Get-SuggestedStrataRoot })
+$ui.RootBox.Text = $ui.SetupRootBox.Text   # never empty: everything joins paths onto it
 $ui.FolderBox.Text = $settings.ClineFolder
 $ui.ClineScriptBox.Text = $settings.ClineScript
 $ui.ExtraBox.Text = $settings.ExtraArgs
@@ -2322,8 +3043,18 @@ $ui.ClientsBox.SelectedItem = [string]$settings.Clients
 if (-not $ui.ClientsBox.SelectedItem) { $ui.ClientsBox.SelectedItem = '0' }
 
 $ui.RootBrowse.Add_Click({
-    $p = Select-Folder (Get-Root) 'Select the Strata folder (the one with START-HERE.bat)'
-    if ($p) { $ui.RootBox.Text = $p; Read-Configs; Update-ServicePicker; Read-Results }
+    $p = Select-Folder (Get-Root) 'Select the Strata folder: one with Strata, or an empty one to download it into'
+    if (-not $p) { return }
+    switch (Get-FolderState $p) {
+        'strata' { $ui.RootBox.Text = $p; $ui.SetupRootBox.Text = $p; Read-Configs; Update-ServicePicker; Read-Results }
+        'empty' {
+            # no Strata there yet: the Setup tab downloads it into this folder
+            $ui.SetupRootBox.Text = $p
+            $ui.Tabs.SelectedItem = $ui.SetupTab
+            Invoke-SetupAction 'strata' 'Download Strata'
+        }
+        default { [System.Windows.MessageBox]::Show("$p has other files and no Strata. Choose a folder with Strata, or an empty one to download it into.", 'Strata') | Out-Null }
+    }
 })
 $ui.RefreshBtn.Add_Click({ Read-Configs; Update-ServicePicker; Read-Results })
 $ui.FolderBrowse.Add_Click({
@@ -2410,6 +3141,7 @@ $ui.ResCompareBtn.Add_Click({ Compare-Results })
 $ui.Tabs.Add_SelectionChanged({
     param($sender, $e)
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ServiceTab) { Update-ServiceStatus }
+    if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.SetupTab) { Show-SetupSteps }
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ConfigTab) { Open-ConfigEditor (@(Get-SelectedConfigs) | Select-Object -First 1) }
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ModelsTab -and -not $script:catalog) {
         Set-Status 'Reading the model catalog from setup.py...'
@@ -2505,6 +3237,18 @@ $ui.ResumeBtn.Add_Click({
     [void](Start-Resume $row)
 })
 
+$ui.SetupRootBrowse.Add_Click({
+    $p = Select-Folder (Clean-Path $ui.SetupRootBox.Text) 'Choose the Strata folder (an existing checkout, or an empty folder for a new one)'
+    if ($p) { $ui.SetupRootBox.Text = $p; if (-not $ui.SetupDataBox.Text.Trim()) { $ui.SetupDataBox.Text = Get-DefaultDataDir $p }; Use-SetupFolders; Show-SetupSteps }
+})
+$ui.SetupDataBrowse.Add_Click({
+    $p = Select-Folder (Clean-Path $ui.SetupDataBox.Text) 'Choose where the model files go (60-190 GB)'
+    if ($p) { $ui.SetupDataBox.Text = $p; Use-SetupFolders; Show-SetupSteps }
+})
+$ui.SetupRootBox.Add_LostFocus({ Use-SetupFolders; Show-SetupSteps })
+$ui.SetupDataBox.Add_LostFocus({ Use-SetupFolders; Show-SetupSteps })
+$ui.SetupRefreshBtn.Add_Click({ $script:hw = $null; $script:updInfo = @{}; Show-SetupSteps })
+
 $ui.SvcApplyBtn.Add_Click({ Install-StrataService })
 $ui.SvcRemoveBtn.Add_Click({ Remove-StrataService })
 $ui.SvcStartBtn.Add_Click({ Start-StrataService })
@@ -2547,6 +3291,7 @@ $timer.Add_Tick({
         Invoke-BenchStep
         Update-SlotOp
         Update-ResumePending
+        Update-SetupWatch
         $script:svcTick++
         if ($script:svcTick % 5 -eq 0 -and $ui.Tabs.SelectedItem -eq $ui.ServiceTab) { Update-ServiceStatus }
     } catch {
@@ -2595,11 +3340,27 @@ $window.Add_Closing({
     try { [pscustomobject]$out | ConvertTo-Json | Set-Content -LiteralPath $SettingsPath -Encoding utf8 } catch {}
 })
 
+$ui.SetupDataBox.Text = $(if ($firstChoice -and $firstChoice.Data) { $firstChoice.Data } elseif (Get-StrataReg 'DataDir') { Get-StrataReg 'DataDir' }
+    elseif ($settings.DataFolder) { [string]$settings.DataFolder } else { Get-DefaultDataDir (Clean-Path $ui.SetupRootBox.Text) })
+if (-not $ui.DataBox.Text.Trim()) { $ui.DataBox.Text = $ui.SetupDataBox.Text }
+if ($foundRoot) { Set-StrataReg 'StrataRoot' $foundRoot }
+Set-StrataReg 'AppDir' $PSScriptRoot
+if (-not $foundRoot) {
+    $ui.Tabs.SelectedItem = $ui.SetupTab
+    Set-Status 'No Strata folder found yet: the Setup tab gets everything it needs.'
+}
 Read-Configs
 Update-CtxHint
 Update-SessionList
 Update-ServicePicker
 Read-Results
 Update-Health
+if ($firstChoice -and $firstChoice.Mode -eq 'fresh') {
+    # "Download Strata here": start that step once the window is up (it confirms first, as always)
+    $window.Add_ContentRendered({
+        if ($script:freshPending) { $script:freshPending = $false; Invoke-SetupAction 'strata' 'Download Strata' }
+    })
+    $script:freshPending = $true
+}
 $timer.Start()
 [void]$window.ShowDialog()

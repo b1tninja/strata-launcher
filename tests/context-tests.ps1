@@ -1,4 +1,4 @@
-# Test the context logic of strata-gui.ps1 / cline-strata.ps1 without starting either UI:
+# Test the context logic of strata-launcher.ps1 / cline-strata.ps1 without starting either UI:
 # pull the real function bodies out of the files with the AST, then drive them with stubs.
 $ErrorActionPreference = 'Stop'
 
@@ -53,8 +53,8 @@ $testHealth = 131072; Assert-Is (Resolve-ClineContext 65536) 58982 'a smaller as
 $testHealth = 0;      Assert-Is (Resolve-ClineContext 0) 28672 'server silent -> fallback, minus the reserve'
 $testHealth = 0;      Assert-Is (Resolve-ClineContext 32768) 28672 'server silent, asked 32768'
 
-# ---------------------------------------------------------------- strata-gui.ps1
-$gui = 'D:\code\strata-gui\strata-gui.ps1'
+# ---------------------------------------------------------------- strata-launcher.ps1
+$gui = Join-Path (Split-Path -Parent $PSScriptRoot) 'strata-launcher.ps1'
 Invoke-Expression (Get-FunctionText $gui @('Get-ArgValue', 'Get-CtxOverride', 'Get-RowContext', 'Get-ClineContext',
     'Get-RopeScale', 'Set-ArgValue', 'Remove-Arg', 'Set-ContextArgs'))
 $ClineContextReserve = 4096
@@ -99,7 +99,7 @@ Assert-Is ($l -join ' ') '--rope-scaling yarn --rope-scale 4 --max-context 52428
 # Run the real function against a throwaway copy of Cline's settings, so a model registered with
 # too big a context is seen being repaired rather than kept because the entry already existed.
 Write-Host '--- Ensure-ClineStrataAuth (launcher)'
-$sandbox = Join-Path $env:TEMP ('strata-gui-tests-' + [Guid]::NewGuid().ToString('N'))
+$sandbox = Join-Path $env:TEMP ('strata-launcher-tests-' + [Guid]::NewGuid().ToString('N'))
 $settings = Join-Path $sandbox '.cline\data\settings'
 New-Item -ItemType Directory -Path $settings | Out-Null
 @'

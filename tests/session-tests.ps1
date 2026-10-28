@@ -1,4 +1,4 @@
-# Test the session-file helpers of strata-gui.ps1 without its UI: the functions are pulled out of
+# Test the session-file helpers of strata-launcher.ps1 without its UI: the functions are pulled out of
 # the script with the AST and driven with stubs; no server, no file outside %TEMP% is touched.
 $ErrorActionPreference = 'Stop'
 
@@ -22,7 +22,7 @@ function Assert-Is($Got, $Want, [string]$What) {
     else { $script:fails++; "  FAIL $What : got $Got, want $Want" }
 }
 
-$gui = Join-Path (Split-Path -Parent $PSScriptRoot) 'strata-gui.ps1'
+$gui = Join-Path (Split-Path -Parent $PSScriptRoot) 'strata-launcher.ps1'
 Invoke-Expression (Get-FunctionText $gui @('Get-SessionDir', 'Get-LatestSessionName', 'Test-SessionName', 'Get-ServerLauncher'))
 function Get-Root { 'M:\strata' }
 

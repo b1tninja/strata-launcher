@@ -1,119 +1,159 @@
-# strata-gui
+<p align="center">
+  <img src="assets/logo.svg" width="128" height="128" alt="Strata Launcher logo">
+</p>
 
-A single-file WPF GUI (Windows PowerShell 5.1, no dependencies) for working with a
-[Strata](https://github.com/niko1221/strata) local-LLM folder: launch its model servers,
-benchmark them, compare the results, install new models, and open Cline against a running one.
+<h1 align="center">Strata Launcher</h1>
 
-Run it:
+<p align="center">
+  Set up, run, benchmark and tune <a href="https://github.com/Niko1221/Strata">Strata</a> on Windows —<br>
+  from a brand-new PC to Cline coding against your local model.
+</p>
+
+<p align="center">
+  <img src="assets/screenshot-setup.png" width="820" alt="The Setup tab on a clean Windows install">
+</p>
+
+Strata runs the Qwen3.8-Flash-Next family of models locally on one graphics card plus system RAM.
+Strata Launcher is a single PowerShell script with a native Windows window around it: it gets
+everything Strata needs onto a new PC, starts and stops its model servers, benchmarks them, edits
+their configs, saves and resumes conversations, and opens [Cline](https://github.com/cline/cline)
+pointed at a running model with the right context limits. Nothing to build and nothing to install
+first — it runs on the Windows PowerShell 5.1 that every Windows 10 and 11 has.
+
+## Quick start
+
+In PowerShell (no administrator rights needed):
 
 ```powershell
-powershell -STA -ExecutionPolicy Bypass -File strata-gui.ps1
-# or point it at a folder at startup:
-powershell -STA -ExecutionPolicy Bypass -File strata-gui.ps1 -StrataRoot D:\strata
+irm https://raw.githubusercontent.com/b1tninja/strata-launcher/main/install.ps1 | iex
 ```
 
-It expects a Strata checkout that has already been set up (i.e. it has `.venv`, `serve\server.py`,
-`tools\strata_bench.py`, and `strata-*.json` model configs — run `START-HERE.bat` there first).
+That puts Strata Launcher in `%LOCALAPPDATA%\Programs\strata-launcher`, adds it to the Start menu
+and the desktop, and starts it. Run the same line again to update it.
 
-## Tabs
+On first start it asks **where Strata is**. It lists the Strata folders it finds on the PC; pick
+one, or choose an **empty or new folder** and it downloads Strata there. The **Setup** tab then
+walks through everything else, one step at a time.
 
-- **Launch** — lists every `strata-*.json` config with its model, quant, context, port and live
-  server status (polled from `http://127.0.0.1:<port>/health`). Start/stop a model's server
-  (its own console window), open its web page, open its log/config. Optional per-launch overrides
-  — a patched config is written to `%TEMP%\strata-gui`, your config files are never modified:
-  - **Max context**: steps up to the model's trained 262,144 run unscaled (a config's rope flags are
-    dropped there); the 384K/512K/1M steps add `--rope-scaling yarn --rope-scale <ctx/262144>`, which
-    Strata documents as experimental. A hint under the box shows the KV cache's RAM/VRAM cost
-    (~13.7 KB per token at int8), the rope state and the number Cline will be told.
-  - **VRAM reserve** (`--vram-reserve-mib`); the hint quotes the value the engine log asked for
-    when GPU memory ran low.
-  - **Shorten an answer that would not fit** (`fit_max_tokens`, on by default): the server caps
-    `max_tokens` to the room left instead of refusing the request.
-  - Extra engine args. Optionally unloads Ollama models first to free VRAM.
-  **Open Cline** waits until the model is loaded, then starts `cline-strata.ps1` — the launcher
-  that ships beside the GUI, taking `-Folder -Model -StrataBase -Context -StrataRoot [-Thinking]` —
-  pointed at this server. Any script with that interface works; the path is a setting.
-  **Sessions** save the conversation the engine holds (KV cache, recurrent state, its checkpoint)
-  to a file and restore it, also into a freshly started engine — Strata's own session files
-  (`POST /slots/0?action=save|restore`), on when the config has `slot_save_path` (Config > Files).
-  **Hibernate** saves `<config>-latest.bin` and stops the server; **Resume** starts it (or loads the
-  model), then restores that file; **Open Cline** can resume first. Measured here (NVFP4, RTX 5090,
-  Windows): a 27.5K-token conversation read cold in 16.0 s, saved in 0.58-0.67 s (626 MiB, ~24 KB per
-  token), restored in 0.48-0.56 s into a restarted engine, after which the next turn reused 27,545
-  tokens and read 19 (0.58 s). A file restores only into the same engine version with the same
-  context, KV and rope settings (the engine refuses others); Strata never deletes them. A save needs
-  free RAM (~355 MiB plus a 2.5 GiB floor here) and is refused when the PC is short of it.
-- **Benchmark** — runs `tools\strata_bench.py` against one or several selected models, one after
-  another (starting their servers as needed, stopping them when done). Live output in the window.
-- **Results** — lists the folders in `bench\results`, shows a table of medians (decode tok/s,
-  prompt tok/s and TTFT at 4K/16K, agent cache hit %) for `strata_bench` `results.json` files,
-  and compares two selected runs side by side via `strata_bench.py --compare`.
-- **Models** — reads the model catalog from the Strata checkout's `setup.py` and shows, per
-  quant, download size, disk need and RAM need against *this* PC (free space on the data drive,
-  RAM, GPU), colour-coded green/yellow/red. "Install with setup..." opens `START-HERE.bat`
-  pre-filled with that family/model.
-- **Config** — an editor for the selected `strata-*.json` (Launch's **Open config** opens it here):
-  - *Model and server*: `model_name`, `port`, `host`, `api_key`, `gpu`, then every setting Strata's
-    own Settings page edits, read from the checkout's `serve\runconfig.py` with its help text.
-  - *Engine*: the common engine flags with their own controls and help (context — which sets rope
-    scaling the way the Launch override does — KV format and streaming, VRAM reserve, expert cache,
-    prefill, speculative decoding, batching, caches, CPU threads).
-  - *Files*: the engine, tokenizer and model paths with a browse button and a mark when one is missing.
-  - *Other arguments*: every remaining engine flag as an editable Flag/Value table.
-  - *JSON*: the file as Save would write it; edit it and load it back into the form.
-  The changes are listed live and checked before saving (ranges, choices, no `host` beyond this PC
-  without an `api_key`, no context past 262,144 without rope scaling, no `lazy_load` with images).
-  Save confirms the list, keeps the previous file as `<name>.bak` and writes through Strata's
-  `runconfig.save` (atomic replace, Strata's own format). **Save as new...** creates another
-  `strata-<name>.json` — e.g. a 256K variant beside the original.
-- Logs and benchmark reports open in a built-in viewer (with Follow for a live log); config files
-  open in their default app. Nothing relies on Notepad, which can be a broken stub on Windows 11.
-- **Service** — installs a per-user scheduled task that runs one config on demand, hidden:
-  the server starts with `--lazy` (doesn't load the model), the first request loads it, and it
-  unloads after N idle minutes (`--idle-unload`) so VRAM is free while nothing uses it. The GUI
-  shows the task state and offers load/unload-now and its log. The task is re-entered on the
-  same script with `-Service` — no second executable. With **Save the conversation before
-  unloading** the runner does the idle unload itself (`-Hibernate`): after the idle time it saves
-  `<config>-latest.bin`, then unloads, logging to `strata-service.hibernate.log`; Resume or Open
-  Cline brings the conversation back (a request that reaches the lazy server first reads it cold).
+Already have a clone of this repository? `powershell -ExecutionPolicy Bypass -File install.ps1`
+adds the shortcuts for it, or run it directly:
 
-Settings (folder paths, Cline launcher, last selection, …) persist to
-`strata-gui.settings.json` next to the script; that file is machine-local and not part of the repo.
+```powershell
+powershell -STA -ExecutionPolicy Bypass -File strata-launcher.ps1 [-StrataRoot <folder>] [-FirstRun]
+```
 
-## Notes
+## Setting up a new PC
 
-- Paths typed with trailing `\` (or wrapped in quotes) are normalized; quoted arguments handed to
-  servers, the benchmark, Cline, and the scheduled task are escaped so a trailing `\` can't eat
-  the closing quote (this needs `QPath` — see the comment by its definition).
-- The GUI only ever stops servers it recognizes (its own, or a `/health` answer matching the
-  config's model); a port taken by anything else is reported, never killed.
-- **Open Cline** hands Cline the context the model really has — the running server's `/health`
-  `max_context`, else the `--max-context` this GUI would launch with, else the config's — and
-  refuses to open rather than guess. The launcher then clamps that to what the server reports and
-  holds back the **Headroom** share of it — 10% by default, never under 4096 tokens (both are
-  `Get-ClineContext`; `-ReservePercent` on the launcher). A flat 4096 was not enough: Cline's
-  estimate runs ~4-5% under the engine's count, and its log showed 131,118-132,455-token prompts
-  sent against a 131,072 window after it had been told 126,976. It writes the result into Cline's
-  `models.json`, `providers.json` and legacy `globalState.json` *every* time, not only when the
-  model is first registered — Cline re-imports `globalState.json` into its settings whenever it
-  starts, so a stale window left there quietly undoes the other two (seen on a real machine: the
-  number went straight back to 262144 on the next Cline run).
-  Why so strict: an agent only compacts against the window it was told. Cline compacts at 0.9 of
-  the number in its model entry, and since cline/cline#14867 it skips automatic compaction
-  altogether for a custom model that declares no limit — so a model with no number just keeps
-  growing. A Strata server never truncates: a prompt past the engine's window gets
-  `400 ... leaves no room to answer`, and so does every request after it. Cline does recognise that
-  reply and compacts and retries when there is history to compact; what it cannot come back from is
-  a first request whose system prompt, tools and input are already too large. A guessed or stale
-  number (the old 262144 default, or the same value parked in `globalState.json`, which Cline
-  re-imports into `providers.json`) is therefore the one setting that cannot be too high.
-- Stopping a server this GUI did not start ends its whole launch chain (the `cmd` of a `run-*.bat` or
-  launch line, the venv's python and the interpreter it starts), so no window is left at
-  "Press any key"; anything outside that chain is left alone.
-- `tests\session-tests.ps1` checks the session-file helpers (file names, folder resolution, the
-  launch-chain lookup).
-- `tests\context-tests.ps1` checks that logic (it pulls the functions out of both scripts with the
-  AST and drives them with stubs, so no GUI, no server and no Cline settings are touched):
-  `powershell -NoProfile -ExecutionPolicy Bypass -File tests\context-tests.ps1`.
-- Requires Windows PowerShell 5.1 (ships with Windows) — WPF comes from .NET Framework; no
-  install step.
+The **Setup** tab checks the PC and fetches what is missing. Nothing is installed until you press
+a step's button, each one says what it will do first, and long steps run in a window of their own
+while the list re-checks itself.
+
+| Step | What it does |
+| --- | --- |
+| **winget** | The easiest way to get the tools below. A new Windows account gets it a few minutes after its first sign-in, and Windows without the Store (Windows Sandbox, LTSC) has none: **Set up winget** registers Windows' own App Installer, or installs it the way Microsoft documents for Sandbox. Every step below also works without it. |
+| **Graphics card, memory, CPU, disk** | Checked against what Strata needs (an NVIDIA RTX 20 series or newer, or a supported Radeon; driver 580+ for NVIDIA; 32 GB of RAM; 60-190 GB of disk). Drivers are linked, never installed for you. |
+| **Git** | What lets Strata update itself. Git for Windows through winget, or without winget MinGit, the portable Git, for your account only. |
+| **Strata** | `git clone` of Strata (or its zip without Git). A clone shows how far it is behind GitHub, and **Update** runs Strata's own `UPDATE.bat`. A zip copy can be **made updatable** once Git is there. |
+| **Python and a PC check** | Strata's own `START-HERE.bat --check`, which installs the Python version Strata pins for your account and creates its environment. |
+| **A model** | Pick one from the catalog — with what each needs and whether it fits this PC — or let Strata choose the recommended size for your RAM. Strata downloads it from Hugging Face itself (58-190 GB, resumable). |
+| **Node.js and Cline** | For **Open Cline**: Node.js through winget or its portable zip, then `npm install -g cline`. |
+| **Shortcuts** | Desktop and Start menu. |
+
+No administrator rights are needed for any of it, and no `gh` or Hugging Face command-line tool.
+
+## Everyday use
+
+| Tab | |
+| --- | --- |
+| **Launch** | Every installed model with its quant, context, port and live server status. Start and stop servers, open the web chat, the engine log (in a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve and more — your config files are never changed. **Sessions**: save the conversation the engine holds to disk and restore it later, even into a restarted engine (**Hibernate** / **Resume**). **Open Cline** in any folder against the selected model. |
+| **Benchmark** | Runs Strata's `strata_bench.py` against one or several models in turn, starting and stopping their servers, with live output. |
+| **Results** | Every benchmark run as a table (decode and prompt speed, time to first token, cache hits); compare two side by side. |
+| **Models** | Strata's model catalog with download size, disk and RAM needs against this PC, colour-coded by fit, and an install button. |
+| **Service** | Runs one model on demand in the background: the server starts without loading the model, the first request loads it, and it unloads after an idle time so the graphics card is free. Optionally saves the conversation before unloading. |
+| **Config** | A full editor for a model's `strata-*.json`: server settings (read from Strata's own settings schema), engine options with explanations, model files, any other engine arguments, and the raw JSON. Changes are listed and checked before saving, and the previous file is kept as `.bak`. **Save as new** makes a variant. |
+| **Setup** | See above; also the place to update Strata. |
+
+## Cline, done right
+
+Strata never truncates a prompt: once a conversation outgrows the model's context, every request
+fails. Cline only compacts a conversation against the limit it was told, and its own token count
+runs a few percent under Strata's. **Open Cline** therefore tells Cline a limit with headroom —
+10% of the context by default (the **Headroom** setting), never under 4,096 tokens — taken from what
+the running server actually reports, and writes it everywhere Cline reads it, every time.
+
+<details>
+<summary>Why each of those details matters</summary>
+
+- Cline compacts at 90% of the limit in its model entry, and skips automatic compaction entirely for
+  a custom model with no limit. A guessed or stale limit is the one setting that can never be too high.
+- With a flat 4,096-token reserve, Cline's log still showed prompts of 131,118-132,455 tokens sent
+  to a 131,072-token server after it had been told 126,976: its estimate is ~4-5% low, so the reserve
+  is a share of the context.
+- Cline re-imports its legacy `globalState.json` into `providers.json` at every start, so the limit is
+  written to `models.json`, `providers.json` and `globalState.json` on every launch.
+- Those files are written as plain UTF-8: Windows PowerShell 5.1 adds a byte-order mark that Node's
+  JSON parser rejects, and Cline then silently rebuilt its settings without any limit and with a
+  30-second timeout.
+</details>
+
+## Sessions
+
+Strata can write the engine's state for a conversation — KV cache, recurrent state, its
+checkpoint — to a file and read it back. Measured on an RTX 5090 under Windows: a 27.5K-token
+conversation took 16.0 s to read cold, saved in 0.6 s (626 MiB) and restored in 0.5 s into a
+restarted engine, after which the next turn reused 27,545 tokens and read 19.
+
+Session files need a session folder in the model's config (Config › Files › `slot_save_path`). A
+file restores only into the same Strata version with the same context, KV and rope settings, and
+Strata never deletes them (~24 KB per token).
+
+## Where things are kept
+
+- The Strata folder, model folder and this tool's folder: `HKCU\Software\StrataLauncher` (per user).
+- Window settings: `strata-launcher.settings.json` next to the script (not part of the repository).
+- Changed configs for a launch: `%TEMP%\strata-launcher`.
+- Formerly named `strata-gui`: an existing install carries its settings, registry values and
+  shortcuts over on first start.
+
+## Tests
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\context-tests.ps1   # Cline limits, contexts, rope scaling
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\session-tests.ps1   # session files, stopping servers
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\check-paths.ps1     # shortcuts, no machine paths, no hidden code
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\sandbox\run-sandbox.ps1
+```
+
+The last one is the **first-time-user test**. In Windows Sandbox — a clean Windows with no winget,
+Git, Python, Node.js or graphics driver — it installs Strata Launcher with the one-line installer,
+goes through the first start, downloads Strata, installs Git, runs Strata's PC check (Python),
+installs Node.js and Cline and sets up winget, checking each step and saving a log and
+screenshots. It needs the Windows Sandbox feature (as administrator, then restart):
+
+```powershell
+Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM -All
+```
+
+<details>
+<summary>Implementation notes</summary>
+
+- Everything is one file, `strata-launcher.ps1`, plus `cline-strata.ps1` (the Cline launcher it
+  starts, usable on its own) and `install.ps1`.
+- It only ever stops servers it recognises (its own, or a `/health` answer naming the config's
+  model), and then their whole launch chain, so no window is left at "Press any key".
+- Everything is downloaded with PowerShell's own `Invoke-WebRequest`, with its progress bar hidden.
+  That matters in Windows PowerShell 5.1: the same 39 MB file took 0.5 s hidden (as fast as
+  `curl.exe`), 26 s with the bar shown, and 30 MB took over 10 minutes in a clean Windows Sandbox. For
+  that reason the PC check fetches the Python installer Strata's `START-HERE.bat` pins (its URL read
+  from that file) when winget is missing, and installs it with Strata's own unattended options,
+  before handing over to Strata — whose own download keeps the bar on.
+- Installs follow each project's own unattended route: python.org's `/quiet InstallAllUsers=0
+  PrependPath=1` (plus `InstallLauncherAllUsers=0`: otherwise the `py` launcher installs for all users,
+  which needs an administrator and can leave a quiet install waiting), MinGit (the Git that git-for-windows offers for tools), Node.js's prebuilt zip,
+  `npm install -g cline`, and Microsoft's `Microsoft.WinGet.Client` module for winget itself.
+- Every setup window records how it ended (`ok`, or `failed:` with the reason or exit code), so the
+  Setup tab reports a failed step at once instead of waiting on it.
+- Quoted paths handed to child processes are escaped so a trailing `\` can't swallow the closing
+  quote (`QPath`).
+- `assets\make-icons.ps1` draws the logo into `logo.png` and the window icon.
+</details>

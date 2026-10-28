@@ -1,9 +1,11 @@
-# Drop a folder on a "Cline Strata" shortcut, or double-click and
-# pick a folder. Starts / waits for Strata (Orca IQ3_XXS), points Cline at it.
+# Opens Cline in a folder, pointed at a local Strata server: starts or waits for the server, installs
+# Node.js and Cline when they are missing, and writes Cline's settings for this model and its context.
+# strata-launcher.ps1 runs it with every argument; it also works on its own (drop a folder on a shortcut to it).
 param(
     [Parameter(Position = 0)]
     [string]$Folder,
-    [string]$Model = 'orcarouter-qwen3.8-flash-next-uncensored-iq3_xxs',
+    # The model id Cline asks for. Empty: the one the running server reports.
+    [string]$Model,
     [string]$Thinking,
     [double]$Temperature,
     # Tokens Cline may fill before it compacts. 0 (default): what the server itself reports as its
@@ -12,15 +14,30 @@ param(
     # Share of the context held back from Cline (at least $ContextReserve tokens) - see Get-ClineContext.
     [ValidateRange(1, 50)]
     [int]$ReservePercent = 10,
-    [string]$StrataRoot = 'M:\GITHUB\niko1221\strata',
-    [string]$StartScript = 'run-orca-iq3_xxs.bat',
-    [string]$StrataBase = 'http://127.0.0.1:8081',
+    # The Strata folder. Empty: strata-launcher's setting beside this script, else $env:STRATA_ROOT.
+    [string]$StrataRoot,
+    # What starts the server when none answers. Empty: the newest run-*.bat Strata's setup wrote.
+    [string]$StartScript,
+    [string]$StrataBase = 'http://127.0.0.1:8080',
     [string]$Provider = 'openai-compatible',
     [switch]$RestartStrata
 )
 
 $ErrorActionPreference = 'Continue'
-$DefaultFolder = 'D:\code'
+# strata-launcher's settings beside this script: its Cline folder, and the Strata folder of older versions.
+$GuiSettings = $null
+foreach ($n in 'strata-launcher.settings.json', 'strata-gui.settings.json') {   # the second: this tool's earlier name
+    $f = Join-Path $PSScriptRoot $n
+    if (-not $GuiSettings -and (Test-Path -LiteralPath $f)) { try { $GuiSettings = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json } catch {} }
+}
+# The registry first (strata-launcher keeps the folder there, per user), then its older settings file.
+foreach ($k in 'HKCU:\Software\StrataLauncher', 'HKCU:\Software\StrataGui') {   # the second: this tool's earlier name
+    if (-not $StrataRoot) { try { $StrataRoot = [string](Get-ItemProperty -Path $k -Name StrataRoot -ErrorAction Stop).StrataRoot } catch {} }
+}
+if (-not $StrataRoot -and $GuiSettings) { $StrataRoot = [string]$GuiSettings.StrataRoot }
+if (-not $StrataRoot) { $StrataRoot = $env:STRATA_ROOT }
+$DefaultFolder = if ($GuiSettings -and $GuiSettings.ClineFolder -and (Test-Path -LiteralPath $GuiSettings.ClineFolder)) {
+    [string]$GuiSettings.ClineFolder } else { [Environment]::GetFolderPath('UserProfile') }
 $ThinkingLevels = @('none', 'low', 'medium', 'high', 'xhigh')
 $ApiKey = 'local'
 $ContextReserve = 4096     # the least held back, whatever the percentage - see Get-ClineContext
@@ -88,21 +105,18 @@ function Resolve-ClineContext([int]$Asked) {
 }
 
 function Stop-Strata {
+    # This Strata folder's server only: its launch window, the server and the engine it started.
+    if (-not $StrataRoot) { Write-Host 'No Strata folder known: not stopping anything.'; return $false }
     Write-Host 'Stopping Strata...'
+    $root = [regex]::Escape($StrataRoot.TrimEnd('\'))
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.CommandLine -and (
-            $_.CommandLine -match [regex]::Escape($StrataRoot) -or
-            $_.CommandLine -match 'run-orca-iq3_xxs|strata-orca|strata\.exe|--pack.*orca-iq3'
-        ) -and (
-            $_.Name -match '^(cmd|python|strata)\.exe$' -or
-            $_.CommandLine -match 'serve\\server\.py|run-orca'
-        )
+        $_.Name -match '^(cmd|python|strata)\.exe$' -and (
+            ($_.CommandLine -match $root -and $_.CommandLine -match 'serve\\server\.py|run-[\w\.\-]+\.bat') -or
+            ($_.ExecutablePath -and $_.ExecutablePath -match "^$root\\"))
     } | ForEach-Object {
         Write-Host "  stop $($_.ProcessId) $($_.Name)"
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     }
-    # Narrow catch for engine left behind
-    Get-Process -Name strata -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     $deadline = (Get-Date).AddSeconds(20)
     while ((Get-Date) -lt $deadline) {
         $h = Test-StrataHealth
@@ -113,12 +127,20 @@ function Stop-Strata {
 }
 
 function Start-StrataProcess {
-    $bat = Join-Path $StrataRoot $StartScript
-    if (-not (Test-Path -LiteralPath $bat)) {
-        Write-Host "Missing start script: $bat"
+    if (-not $StrataRoot -or -not (Test-Path -LiteralPath $StrataRoot -PathType Container)) {
+        Write-Host 'No Strata server answers and no Strata folder is known: start one from strata-launcher, or pass -StrataRoot.'
         return $false
     }
-    Write-Host "Starting Strata ($StartScript)..."
+    $bat = if ($StartScript) { Join-Path $StrataRoot $StartScript } else {
+        # setup writes run-<model>.bat for every model it installs; the newest is the one set up last
+        Get-ChildItem -LiteralPath $StrataRoot -Filter 'run-*.bat' -File | Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $bat -or -not (Test-Path -LiteralPath $bat)) {
+        Write-Host "No start script in $StrataRoot (setup writes run-<model>.bat): run START-HERE.bat there first."
+        return $false
+    }
+    Write-Host "Starting Strata ($(Split-Path $bat -Leaf))..."
     Start-Process -FilePath $bat -WorkingDirectory $StrataRoot
     return $true
 }
@@ -139,7 +161,7 @@ function Wait-StrataReady {
         }
         Start-Sleep -Seconds 5
     }
-    Write-Host 'Strata did not become ready in time. Check its window / strata-orca-iq3_xxs.log'
+    Write-Host "Strata did not become ready in time. Check its window and the strata-<model>.log in $StrataRoot."
     return $false
 }
 
@@ -376,6 +398,9 @@ if (-not $Folder -and [Threading.Thread]::CurrentThread.GetApartmentState() -ne 
     if ($PSBoundParameters.ContainsKey('Thinking')) { $forward += @('-Thinking', $Thinking) }
     if ($PSBoundParameters.ContainsKey('Temperature')) { $forward += @('-Temperature', ([string]$Temperature)) }
     if ($PSBoundParameters.ContainsKey('Context')) { $forward += @('-Context', ([string]$Context)) }
+    foreach ($k in 'StrataRoot', 'StartScript', 'StrataBase', 'ReservePercent') {
+        if ($PSBoundParameters.ContainsKey($k)) { $forward += @("-$k", "`"$($PSBoundParameters[$k])`"") }
+    }
     if ($RestartStrata) { $forward += '-RestartStrata' }
     Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $forward
     exit
@@ -389,7 +414,7 @@ if ($Folder) {
     }
     $Folder = (Resolve-Path -LiteralPath $Folder).Path
 } else {
-    Write-Host 'No folder dropped — choose a repo folder.'
+    Write-Host 'No folder given: choose the folder Cline should open.'
     $Folder = Select-FolderDialog -Initial $DefaultFolder
     if (-not $Folder) {
         Write-Host 'Cancelled.'
@@ -400,6 +425,11 @@ if ($Folder) {
 Write-Host "Folder: $Folder"
 Write-Host '---- Strata ----'
 if (-not (Ensure-StrataModel)) { return }
+if (-not $Model) {
+    $Model = (Test-StrataHealth).Model
+    if (-not $Model) { Write-Host "The server at $StrataBase does not report a model name; pass -Model."; return }
+    Write-Host "Model: $Model (what the server reports)"
+}
 if (-not (Ensure-Cline)) { return }
 Write-Host '---- Context ----'
 $ClineContext = Resolve-ClineContext $Context

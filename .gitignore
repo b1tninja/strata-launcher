@@ -1,5 +1,6 @@
 # machine-local state
-strata-gui.settings.json
+strata-launcher.settings.json
 strata-service.log
 strata-service.err.log
 .claude/
+strata-gui.settings.json
