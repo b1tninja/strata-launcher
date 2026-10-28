@@ -137,6 +137,12 @@ try {
     Assert-Is $e.maxInputTokens 126976 'maxInputTokens follows'
     Assert-Is $e.maxTokens 8192 'maxTokens filled in (min of 8192 and a quarter)'
     Assert-Is $m.providers.'openai-compatible'.provider.baseUrl 'http://127.0.0.1:8080/v1' 'base URL points at this server'
+    # Cline's JSON.parse rejects a byte-order mark and then rebuilds the provider without contextWindow,
+    # which turns its automatic compaction off: both files must be plain UTF-8.
+    foreach ($f in 'models.json', 'providers.json') {
+        $b = [IO.File]::ReadAllBytes((Join-Path $settings $f))
+        Assert-Is ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) $false "$f has no byte-order mark"
+    }
     $p = Get-Content -LiteralPath (Join-Path $settings 'providers.json') -Raw | ConvertFrom-Json
     Assert-Is $p.providers.'openai-compatible'.settings.contextWindow 126976 'providers.json gets it too'
     $g = Get-Content -LiteralPath (Join-Path $sandbox '.cline\data\globalState.json') -Raw | ConvertFrom-Json

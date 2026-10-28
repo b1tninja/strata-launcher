@@ -265,7 +265,10 @@ function Ensure-ClineStrataAuth {
                 $settings | Add-Member -NotePropertyName apiKey -NotePropertyValue $ApiKey -Force
                 $settings | Add-Member -NotePropertyName contextWindow -NotePropertyValue $Tokens -Force
                 $settings | Add-Member -NotePropertyName timeout -NotePropertyValue 600000 -Force
-                $cfg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $providersPath -Encoding utf8
+                # UTF-8 *without* a BOM: Set-Content -Encoding utf8 writes one in Windows PowerShell 5.1,
+                # Node's JSON.parse rejects it, and Cline then rebuilds this provider from globalState.json -
+                # with no contextWindow (so no automatic compaction at all) and a 30 s timeout. Same for models.json.
+                [IO.File]::WriteAllText($providersPath, ($cfg | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding $false))
             }
         } catch {
             Write-Host "Could not patch providers.json: $_"
@@ -310,7 +313,7 @@ function Ensure-ClineStrataAuth {
                     $changed = $true
                 }
             }
-            if ($changed) { $json | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $modelsPath -Encoding utf8 }
+            if ($changed) { [IO.File]::WriteAllText($modelsPath, ($json | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding $false)) }
         } catch {
             Write-Host "Could not patch models.json: $_"
         }
