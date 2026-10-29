@@ -14,7 +14,14 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.For
 $A = [System.Windows.Automation.AutomationElement]
 $CT = [System.Windows.Automation.ControlType]
 
-function Log([string]$m) { Add-Content -LiteralPath "$out\log.txt" -Encoding UTF8 -Value ("{0:HH:mm:ss}  {1}" -f (Get-Date), $m) }
+function Log([string]$m) {
+    # the host reads this file while the test writes it, and a write to the mapped folder then fails now
+    # and again: try again rather than lose the line
+    $line = "{0:HH:mm:ss}  {1}" -f (Get-Date), $m
+    for ($i = 0; $i -lt 20; $i++) {
+        try { Add-Content -LiteralPath "$out\log.txt" -Encoding UTF8 -Value $line -ErrorAction Stop; return } catch { Start-Sleep -Milliseconds 250 }
+    }
+}
 function Check([bool]$ok, [string]$what) { if ($ok) { Log "ok    $what" } else { $script:fails++; Log "FAIL  $what" } }
 function Shot([string]$name) {
     $script:shot++
