@@ -1,6 +1,7 @@
 # Runs inside Windows Sandbox (run-sandbox.ps1 starts it at logon): does what a first-time user does,
 # checks each result, and writes log.txt, screenshots and done.txt (PASS/FAIL) to C:\out.
-# -Local: install the copy of this repository mapped into the sandbox instead of the one-line web install.
+# Installs with strata-launcher-setup.cmd (the release's download, which runs the one-line web install from GitHub's main);
+# -Local: installs the copy of this repository mapped into the sandbox instead.
 param([switch]$SkipPcCheck, [switch]$Local)
 $ErrorActionPreference = 'Continue'
 $out = 'C:\out'
@@ -95,8 +96,9 @@ if ($Local) {
     foreach ($n in 'strata-launcher.settings.json', 'strata-gui.settings.json') { Remove-Item -LiteralPath (Join-Path $gui $n) -ErrorAction SilentlyContinue }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $gui 'install.ps1') -NoStart *>> "$out\install.txt"
 } else {
-    Log "> irm $installUrl | iex"
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm $installUrl | iex" *>> "$out\install.txt"
+    Log "> strata-launcher-setup.cmd (runs: irm $installUrl | iex)"
+    & cmd.exe /c "$src\strata-launcher-setup.cmd" *>> "$out\install.txt"
+    Check ($LASTEXITCODE -eq 0) 'strata-launcher-setup.cmd finished'
     Check (Test-Path (Join-Path $gui 'strata-launcher.ps1')) 'one-line install: the launcher is in LocalAppData\Programs'
 }
 Check (Test-Path (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Strata Launcher.lnk')) 'install.ps1: desktop shortcut'
@@ -150,10 +152,15 @@ if (Run-Step $win $p.Id 'Install Git (portable)' 'git' 300) {
 }
 Shot 'after-git'
 
-# 5. Strata's own PC check: Python for the user (no winget here: its python.org route) and .venv
+# 5. the PC check: uv makes .venv with Strata's Python, then Strata's START-HERE.bat --check installs its packages
 if (-not $SkipPcCheck) {
+    $t0 = Get-Date
     if (Run-Step $win $p.Id 'Check this PC' 'check' 1500) {
+        Log ("      the PC check took {0:n0} s" -f ((Get-Date) - $t0).TotalSeconds)
         Check (Test-Path 'C:\Strata\.venv\Scripts\python.exe') 'Strata''s .venv exists'
+        Check (Test-Path (Join-Path $env:LOCALAPPDATA 'Programs\uv\uv.exe')) 'uv is in LocalAppData\Programs'
+        Check ((Get-Content 'C:\Strata\.venv\pyvenv.cfg' -Raw -ErrorAction SilentlyContinue) -match '(?m)^uv = ') 'uv made the .venv'
+        Check (-not (Test-Path (Join-Path $env:TEMP 'strata-python-setup.exe'))) 'no python.org installer was needed'
         Check ((Step-Text $win) -match 'Python environment is ready') 'Setup tab: Python ready'
     }
     Shot 'after-pc-check'
@@ -182,5 +189,13 @@ Shot-Window $win 'setup'
 if ($Local) {
     $err = Get-Content "$out\gui-err.txt" -ErrorAction SilentlyContinue
     Check (-not $err) 'the GUI wrote no errors'
+} else {
+    # 8. uninstall, with the launcher still open
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$src\install.ps1" -Uninstall *>> "$out\install.txt"
+    Start-Sleep 2
+    Check (-not (Test-Path $gui)) 'uninstall: the launcher''s folder is gone'
+    Check (-not (Test-Path (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Strata Launcher.lnk'))) 'uninstall: no desktop shortcut'
+    Check (-not (Test-Path 'HKCU:\Software\StrataLauncher')) 'uninstall: no registry key'
+    Check (Test-Path 'C:\Strata\START-HERE.bat') 'uninstall: Strata is still there'
 }
 Done $null

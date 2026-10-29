@@ -4,16 +4,41 @@
 #   irm https://raw.githubusercontent.com/b1tninja/strata-launcher/main/install.ps1 | iex
 #
 # or, in a clone: powershell -ExecutionPolicy Bypass -File install.ps1  (shortcuts for that clone only).
+# To remove it: & ([scriptblock]::Create((irm https://raw.githubusercontent.com/b1tninja/strata-launcher/main/install.ps1))) -Uninstall
 param(
     # Where strata-launcher goes when it is downloaded.
     [string]$Dir = (Join-Path $env:LOCALAPPDATA 'Programs\strata-launcher'),
     # Where strata-launcher comes from (a fork, or a mirror).
     [string]$Repo = 'https://github.com/b1tninja/strata-launcher',
     [switch]$NoShortcuts,
-    [switch]$NoStart
+    [switch]$NoStart,
+    # Remove strata-launcher: its shortcuts, its registry key and (when it was downloaded, not a clone you
+    # run it from) its folder. Strata, the models, Python, Git, Node.js and Cline stay.
+    [switch]$Uninstall
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($Uninstall) {
+    foreach ($folder in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))) {
+        foreach ($n in 'Strata Launcher.lnk', 'Strata GUI.lnk') { Remove-Item -LiteralPath (Join-Path $folder $n) -ErrorAction SilentlyContinue }
+    }
+    $app = (Get-ItemProperty -Path 'HKCU:\Software\StrataLauncher' -ErrorAction SilentlyContinue).AppDir
+    Remove-Item -Path 'HKCU:\Software\StrataLauncher', 'HKCU:\Software\StrataGui' -Recurse -ErrorAction SilentlyContinue
+    # only the folder this installer downloads into, and only when it holds strata-launcher
+    $own = Join-Path $env:LOCALAPPDATA 'Programs\strata-launcher'
+    if ((Test-Path -LiteralPath (Join-Path $own 'strata-launcher.ps1')) -and $PSScriptRoot -ne $own) {
+        # a running launcher holds the folder (its working folder): close it first
+        Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+            Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf("$own\strata-launcher.ps1", [StringComparison]::OrdinalIgnoreCase) -ge 0 } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 500
+        Remove-Item -LiteralPath $own -Recurse -Force
+        Write-Host "Removed $own"
+    } elseif ($app) { Write-Host "Left $app as it is (delete it yourself if you like)." }
+    Write-Host 'Strata Launcher is uninstalled. Strata, its models and the tools the Setup tab installed are still there.'
+    return
+}
 
 # Run from a clone: use it where it is.
 $here = if ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'strata-launcher.ps1'))) { $PSScriptRoot } else { $null }

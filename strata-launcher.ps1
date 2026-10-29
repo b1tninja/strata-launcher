@@ -1974,54 +1974,45 @@ function Invoke-SetupAction([string]$Key, [string]$Label) {
             Start-SetupConsole 'strata' 'Updating Strata' "Set-Location -LiteralPath '$($root -replace "'", "''")'`r`nWrite-Host '> UPDATE.bat'`r`n`$null | & cmd.exe /c UPDATE.bat | Out-Host"
         }
         { $_ -in 'check|Check this PC', 'check|Check again' } {
-            if (-not (Confirm-Setup "Run Strata's setup check (START-HERE.bat --check) in`n$root`n`nIt installs Python for your account if it is missing, creates Strata's .venv there, and prints what this PC can run. It downloads no model.")) { return }
-            # Without winget, START-HERE.bat downloads the Python it pins with Invoke-WebRequest and its progress bar
-            # on, which crawls (it ran out a 25-minute limit in Windows Sandbox). Fetch that same installer - its URL
-            # read from this START-HERE.bat, so a new pin is followed - with the bar hidden, install it with
-            # Strata's own options, and START-HERE.bat then finds Python and goes on.
-            $pyUrl = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'START-HERE.bat') -Raw -ErrorAction SilentlyContinue),
-                'https://www\.python\.org/ftp/python/[\d\.]+/python-[\d\.]+-amd64\.exe').Value
-            $pre = if ($pyUrl) { @(
-                '# Python 3.10+ already here (the py launcher, python on PATH, or a per-user install), or winget to get it?'
-                '$havePy = $false'
-                '# py, then python; not the Microsoft Store stub (WindowsApps), which only opens the Store'
-                'foreach ($cmd in @(@(''py'', ''-3''), @(''python''))) {'
-                '    $exe = Get-Command $cmd[0] -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch ''\\WindowsApps\\'' } | Select-Object -First 1'
-                '    if (-not $exe) { continue }'
-                '    & $exe.Source @($cmd | Select-Object -Skip 1) -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>$null'
-                '    if ($LASTEXITCODE -eq 0) { $havePy = $true; break }'
-                '}'
-                'if (-not $havePy) { $havePy = [bool](Get-ChildItem (Join-Path $env:LOCALAPPDATA ''Programs\Python\Python3*\python.exe'') -ErrorAction SilentlyContinue) }'
-                'if (-not $havePy -and -not (Get-Command winget -ErrorAction SilentlyContinue)) {'
-                '    Write-Host ''Installing the Python that Strata pins (python.org), for your account:'''
-                '    $setup = Join-Path $env:TEMP ''strata-python-setup.exe'''
-                "    Get-File '$pyUrl' `$setup"
-                '    # Strata''s options, plus InstallLauncherAllUsers=0 (the py launcher otherwise installs for all users, which'
-                '    # needs an administrator and leaves a quiet install waiting) and no docs or Tcl/Tk (Strata uses neither; each'
-                '    # is one more Windows Installer package, minutes each in Windows Sandbox). Log: %TEMP%\strata-python-setup.log.'
-                '    $pyArgs = ''/quiet InstallAllUsers=0 InstallLauncherAllUsers=0 PrependPath=1 Include_launcher=1 Include_test=0 Include_doc=0 Include_tcltk=0 /log "'' + (Join-Path $env:TEMP ''strata-python-setup.log'') + ''"'''
-                '    Write-Host "> python setup $pyArgs"'
-                '    # the installer itself, not -Wait: Windows PowerShell''s -Wait also waits for every process the installer leaves behind'
-                '    $r = Start-Process -FilePath $setup -ArgumentList $pyArgs -PassThru'
-                '    # a quiet install prints nothing: show each part as its log names it (each can take minutes on a new PC)'
-                '    Write-Host ''  (quiet install, up to several minutes per part on a new PC)'''
-                '    $pyLog = Join-Path $env:TEMP ''strata-python-setup.log''; $shown = @{}; $until = (Get-Date).AddMinutes(20)'
-                '    while (-not $r.WaitForExit(2000)) {'
-                '        if ((Get-Date) -gt $until) { throw ''the Python installer did not finish in 20 minutes (see %TEMP%\strata-python-setup.log)'' }'
-                '        try {'
-                '            $fs = [IO.File]::Open($pyLog, ''Open'', ''Read'', ''ReadWrite'')'
-                '            try { $text = (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }'
-                '            foreach ($m in [regex]::Matches($text, ''Applying execute package: (\w+?)_'')) {'
-                '                $part = $m.Groups[1].Value'
-                '                if (-not $shown[$part]) { $shown[$part] = $true; Write-Host ("  {0:HH:mm:ss} installing {1}" -f (Get-Date), $part) }'
+            if (-not (Confirm-Setup "Run Strata's setup check (START-HERE.bat --check) in`n$root`n`nWithout a Python for Strata yet, it first gets uv (astral.sh, one small program, into $env:LOCALAPPDATA\Programs\uv), which downloads a standalone Python and creates Strata's .venv with it: no installer, nothing system-wide. Then START-HERE.bat installs Strata's packages and prints what this PC can run. It downloads no model.")) { return }
+            # The Python version Strata pins, read from this START-HERE.bat so a new pin is followed.
+            $pyVer = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'START-HERE.bat') -Raw -ErrorAction SilentlyContinue),
+                'python-(3\.\d+\.\d+)-amd64\.exe').Groups[1].Value
+            if (-not $pyVer) { $pyVer = '3.12' }
+            # START-HERE.bat skips its own Python install when .venv\Scripts\python.exe exists (or the python\ folder
+            # of Strata's Terminal archive). Its own route - winget, or python.org's installer - is many Windows
+            # Installer packages, each one waiting minutes on a new PC; uv fetches a standalone Python in seconds.
+            # When uv does not work out, the half-made .venv goes and START-HERE.bat installs Python its own way.
+            $pre = @(
+                "Set-Location -LiteralPath '$($root -replace "'", "''")'"
+                'if (-not (Test-Path ''python\python.exe'') -and -not (Test-Path ''.venv\Scripts\python.exe'')) {'
+                '    try {'
+                '        $uv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source'
+                '        if (-not $uv) {'
+                '            $uvDir = Join-Path $env:LOCALAPPDATA ''Programs\uv'''
+                '            $uv = Join-Path $uvDir ''uv.exe'''
+                '            if (-not (Test-Path -LiteralPath $uv)) {'
+                '                Write-Host ''Getting uv (astral.sh), which sets up Python for Strata:'''
+                '                $url = ''https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip'''
+                '                $zip = Join-Path $env:TEMP ''uv-x86_64-pc-windows-msvc.zip'''
+                '                Get-File $url $zip'
+                '                Invoke-WebRequest -UseBasicParsing "$url.sha256" -OutFile "$zip.sha256"'
+                '                $want = ((Get-Content -LiteralPath "$zip.sha256" -Raw).Trim() -split ''\s+'')[0]'
+                '                if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $want) { throw ''the uv download does not match its published SHA-256'' }'
+                '                Expand-Archive -LiteralPath $zip -DestinationPath $uvDir -Force'
+                '                Remove-Item -LiteralPath $zip, "$zip.sha256" -ErrorAction SilentlyContinue'
                 '            }'
-                '        } catch {}'
+                '        }'
+                "        Write-Host '> uv venv --seed --python $pyVer .venv'"
+                "        & `$uv venv --seed --python '$pyVer' .venv"
+                '        if ($LASTEXITCODE) { throw "uv ended with $LASTEXITCODE" }'
+                '    } catch {'
+                '        Write-Host "uv could not set up Python ($($_.Exception.Message)); START-HERE.bat installs it its own way." -ForegroundColor Yellow'
+                '        Remove-Item -LiteralPath ''.venv'' -Recurse -Force -ErrorAction SilentlyContinue'
                 '    }'
-                '    if ($r.ExitCode) { throw "the Python installer ended with $($r.ExitCode) (see %TEMP%\strata-python-setup.log)" }'
-                '    Update-EnvPath'
                 '}'
-            ) -join "`r`n" } else { '' }
-            Start-SetupConsole 'check' 'Strata: checking this PC' ($pre + "`r`nSet-Location -LiteralPath '$($root -replace "'", "''")'`r`nWrite-Host '> START-HERE.bat --check'`r`n`$null | & cmd.exe /c START-HERE.bat --check | Out-Host")
+            ) -join "`r`n"
+            Start-SetupConsole 'check' 'Strata: checking this PC' ($pre + "`r`nWrite-Host '> START-HERE.bat --check'`r`n`$null | & cmd.exe /c START-HERE.bat --check | Out-Host")
         }
         'model|Choose a model...' {
             Use-SetupFolders
