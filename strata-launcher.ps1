@@ -200,8 +200,14 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
         <ListView.View>
           <GridView>
             <GridViewColumn Header="Config" Width="190" DisplayMemberBinding="{Binding File}"/>
-            <GridViewColumn Header="Model" Width="300" DisplayMemberBinding="{Binding Model}"/>
+            <GridViewColumn Header="Model" Width="260" DisplayMemberBinding="{Binding Model}"/>
             <GridViewColumn Header="Quant" Width="80" DisplayMemberBinding="{Binding Quant}"/>
+            <GridViewColumn Width="70" DisplayMemberBinding="{Binding Disk}">
+              <GridViewColumn.Header><TextBlock Text="Disk GB" ToolTip="What the model's files take on disk (Strata's own count), with the files it shares with other models, such as the MTP draft layer. Remove model frees the part that is its alone."/></GridViewColumn.Header>
+            </GridViewColumn>
+            <GridViewColumn Width="70" DisplayMemberBinding="{Binding Ram}">
+              <GridViewColumn.Header><TextBlock Text="RAM GB" ToolTip="System RAM it needs to keep every expert in RAM, from Strata's model catalog (a range: it runs with less, reading the rest from the SSD). ~ : not in the catalog; the closest entry's figure."/></GridViewColumn.Header>
+            </GridViewColumn>
             <GridViewColumn Header="Context" Width="80" DisplayMemberBinding="{Binding Context}"/>
             <GridViewColumn Header="KV" Width="50" DisplayMemberBinding="{Binding Kv}"/>
             <GridViewColumn Header="Port" Width="50" DisplayMemberBinding="{Binding Port}"/>
@@ -600,10 +606,11 @@ function Get-Python {
     return $null
 }
 
-# Removing a model: Strata's own removal plan (tools/strata_mcp.py, the code its desktop and terminal apps use)
-# says which files are the model's alone - a file another installed model's config names stays, and so does a
-# file outside Strata's folders that Strata did not download - plus its config, .bak, log and run-*.bat.
-$StrataRemovePy = @'
+# Strata's own answers about installed models, from tools/strata_mcp.py (the code its desktop and terminal apps
+# use): "usage", what each model takes on disk; "plan", what removing one deletes - the files that are its alone
+# (a file another installed model's config names stays, and so does a file outside Strata's folders that Strata
+# did not download) plus its config, .bak, log and run-*.bat; "delete", that removal carried out.
+$StrataHelperPy = @'
 import importlib.util, json, sys
 from pathlib import Path
 root, tag, action = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
@@ -617,7 +624,9 @@ try:
         s = mod.Strata(root, root)
     except TypeError:                             # an older Strata: Strata(root) only
         s = mod.Strata(root)
-    if not hasattr(s, "removal_plan") or not hasattr(mod, "Tools"):
+    if action == "usage":
+        r = s.disk_usage() if hasattr(s, "disk_usage") else {"error": "this Strata is too old to report disk use"}
+    elif not hasattr(s, "removal_plan") or not hasattr(mod, "Tools"):
         r = {"error": "this Strata is too old to remove models from here: update it first (Setup tab)"}
     elif action == "plan":
         r = s.removal_plan(s.find_config(tag))
@@ -628,14 +637,15 @@ except Exception as e:
 out.write(json.dumps(r))
 '@
 
-function Invoke-StrataRemove([string]$Tag, [string]$Action) {
-    # -> Strata's answer (plan, or what was deleted), or @{ error } when it could not be asked
+function Invoke-StrataHelper([string]$Tag, [string]$Action) {
+    # -> Strata's answer (usage, plan, or what was deleted), or @{ error } when it could not be asked.
+    # $Tag is a config's name without strata- and .json ('-' for usage: Windows PowerShell drops an empty argument).
     $py = Get-Python
     if (-not $py) { return [pscustomobject]@{ error = "Strata's Python environment (.venv) is not set up: run the PC check in the Setup tab" } }
-    if (-not (Test-Path -LiteralPath (Join-Path (Get-Root) 'tools\strata_mcp.py'))) { return [pscustomobject]@{ error = 'this Strata is too old to remove models from here: update it first (Setup tab)' } }
+    if (-not (Test-Path -LiteralPath (Join-Path (Get-Root) 'tools\strata_mcp.py'))) { return [pscustomobject]@{ error = 'this Strata is too old for that: update it first (Setup tab)' } }
     if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
-    $script = Join-Path $TempDir 'strata-remove.py'
-    [IO.File]::WriteAllText($script, $StrataRemovePy, (New-Object Text.UTF8Encoding $false))
+    $script = Join-Path $TempDir 'strata-helper.py'
+    [IO.File]::WriteAllText($script, $StrataHelperPy, (New-Object Text.UTF8Encoding $false))
     $old = $env:PYTHONUTF8; $env:PYTHONUTF8 = '1'
     try { $json = & $py $script (Get-Root) $Tag $Action 2>$null | Out-String } finally { $env:PYTHONUTF8 = $old }
     try { return ($json | ConvertFrom-Json) } catch { return [pscustomobject]@{ error = "Strata gave no answer ($($json.Trim()))" } }
@@ -646,7 +656,7 @@ function Remove-Model($Row) {
     if (Test-ServiceRow $Row) { Set-Status "$($Row.Model) is the Service tab's model: remove the service first, then the model."; return }
     $tag = [IO.Path]::GetFileNameWithoutExtension($Row.File) -replace '^strata-', ''
     Set-Status "Asking Strata what removing $($Row.Model) deletes..."
-    $plan = Invoke-StrataRemove $tag 'plan'
+    $plan = Invoke-StrataHelper $tag 'plan'
     if ($plan.error) { Set-Status "Cannot remove $($Row.Model): $($plan.error)"; return }
     $fmt = { param($b) if ($b -ge 1GB) { '{0:n1} GB' -f ($b / 1GB) } elseif ($b -ge 1MB) { '{0:n0} MB' -f ($b / 1MB) } else { '{0:n0} KB' -f ($b / 1KB) } }
     $lines = @($plan.remove | Sort-Object bytes -Descending | ForEach-Object { "  $(& $fmt $_.bytes)`t$($_.path)" })
@@ -657,7 +667,7 @@ function Remove-Model($Row) {
         $(if (Get-SessionDir $Row) { "`n`nIts session files (in $(Get-SessionDir $Row)) are kept." } else { '' })
     if ([System.Windows.MessageBox]::Show($msg, 'Remove model', 'OKCancel', 'Warning') -ne 'OK') { Set-Status 'Nothing was removed.'; return }
     $window.Cursor = [System.Windows.Input.Cursors]::Wait
-    try { $r = Invoke-StrataRemove $tag 'delete' } finally { $window.Cursor = $null }
+    try { $r = Invoke-StrataHelper $tag 'delete' } finally { $window.Cursor = $null }
     if ($r.error) { Set-Status "Removing $($Row.Model) failed: $($r.error)"; return }
     $settings.LastConfig = ''
     Read-Configs; Update-ServicePicker; Update-SessionList
@@ -741,6 +751,8 @@ function Read-Configs {
             Quant   = Get-QuantLabel $cfg
             Context = Format-Tokens (Get-ArgValue $cfg.args '--max-context')
             Kv      = if ($kv) { $kv } else { '-' }
+            Disk    = ''   # Update-ConfigSizes fills these in once the list is up
+            Ram     = ''
             Port    = $port
             Log     = [string]$cfg.log
             Status  = '...'
@@ -748,6 +760,7 @@ function Read-Configs {
         }
         $script:configs.Add($row)
     }
+    if ($script:configs.Count) { [void]$window.Dispatcher.BeginInvoke([action]{ Update-ConfigSizes }, [System.Windows.Threading.DispatcherPriority]::Background) }
     foreach ($row in $script:configs) {
         if ($keep -contains $row.Path) { [void]$ui.ConfigList.SelectedItems.Add($row) }
     }
@@ -757,6 +770,47 @@ function Read-Configs {
     } else {
         Set-Status "$($script:configs.Count) model config(s) in $root"
     }
+}
+
+function Get-CatalogRamText($M, $Cat) {
+    # A model's RAM need as the catalog states it: one figure, or for a RAM-budget model the range from its
+    # minimum to every expert in RAM.
+    if ($M.budget) { return '{0}-{1:n0}' -f $Cat.unsloth_min, ($M.arena_gb / 1.073741824 + $Cat.beside) }
+    return [string]$M.ram_gb
+}
+
+function Update-ConfigSizes {
+    # The installed list's Disk and RAM columns: disk from Strata's own count (disk_usage, the figure its apps
+    # show), RAM from its catalog (setup.py). Either is left empty when this Strata cannot say.
+    if (-not $script:configs.Count -or -not (Get-Python)) { return }
+    $usage = Invoke-StrataHelper '-' 'usage'
+    $cat = if ($script:catalog) { $script:catalog } else { $script:sizeCatalog }
+    if (-not $cat) {
+        if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
+        $file = Join-Path $TempDir 'catalog.py'
+        Set-Content -LiteralPath $file -Value $CatalogPy -Encoding ascii
+        Push-Location -LiteralPath (Get-Root)
+        try { $cat = & (Get-Python) -I $file (Get-Root) 2>$null | Out-String | ConvertFrom-Json } catch { $cat = $null } finally { Pop-Location }
+        $script:sizeCatalog = $cat
+    }
+    foreach ($row in $script:configs) {
+        $tag = [IO.Path]::GetFileNameWithoutExtension($row.File) -replace '^strata-', ''
+        $u = if (-not $usage.error -and $usage.models) { $usage.models.$tag } else { $null }
+        $row.Disk = if ($u) { '{0:n1}' -f (([double]$u.bytes + [double]$u.shared_bytes) / 1e9) } else { '' }
+        $row.Ram = ''
+        if ($cat) {
+            $name = $row.Model.ToLower()
+            $m = $cat.models | Where-Object { ('{0}-{1}' -f $_.name, $_.quant).ToLower() -eq $name } | Select-Object -First 1
+            if ($m) { $row.Ram = Get-CatalogRamText $m $cat }
+            else {
+                # a model of your own: the catalog entry whose base name it contains and whose quant it ends with
+                $m = $cat.models | Where-Object { $name.Contains($_.name.ToLower()) -and $name.EndsWith('-' + $_.quant.ToLower()) } |
+                    Sort-Object { $_.name.Length } -Descending | Select-Object -First 1
+                if ($m) { $row.Ram = '~' + (Get-CatalogRamText $m $cat) }
+            }
+        }
+    }
+    $ui.ConfigList.Items.Refresh()
 }
 
 function Get-CtxOverride {
@@ -3034,7 +3088,7 @@ function Update-CatalogFit {
             Quant     = $m.quant
             Download  = '{0:n1}' -f [double]$m.download_gb
             Disk      = '{0:n0}' -f $need
-            Ram       = $(if ($m.budget) { '{0}-{1:n0}' -f $cat.unsloth_min, ($m.arena_gb / 1.073741824 + $cat.beside) } else { [string]$m.ram_gb })
+            Ram       = Get-CatalogRamText $m $cat
             RamFit    = $ramFit
             DiskFit   = $diskFit
             Installed = $(if ($isInstalled) { 'yes' } else { '' })

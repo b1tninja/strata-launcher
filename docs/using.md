@@ -1,7 +1,11 @@
 # Using Strata Launcher
 
 The list at the top shows every model config in the Strata folder (`strata-*.json`) with its quant,
-context, port and live server status. Select one to launch it, or several to benchmark them in turn.
+disk use, RAM need, context, port and live server status. **Disk GB** is Strata's own count of the
+model's files, including files it shares with other models (the MTP draft layer). **RAM GB** is the
+system RAM Strata's catalog gives for keeping every expert in RAM (a range for a RAM-budget model, which
+runs with less by reading the rest from the SSD); `~` marks a model of your own, shown with the closest
+catalog entry's figure. Select one to launch it, or several to benchmark them in turn.
 
 | Tab | |
 | --- | --- |
