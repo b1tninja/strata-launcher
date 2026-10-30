@@ -422,6 +422,8 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
               </ListView.View>
             </ListView>
             <DockPanel Grid.Row="4">
+              <Button x:Name="CatRemoveBtn" DockPanel.Dock="Right" Content="Remove..." Margin="8,0,0,0" VerticalAlignment="Top" IsEnabled="False"
+                      ToolTip="Delete the selected installed model's files and config to free the disk space (Strata decides what is safe to delete; files another model uses stay)"/>
               <Button x:Name="InstallBtn" DockPanel.Dock="Right" Content="Install with setup..." Margin="8,0,0,0" VerticalAlignment="Top"/>
               <TextBlock x:Name="CatDetail" TextWrapping="Wrap" Foreground="#FF444444"
                          Text="Green: fits with every expert in RAM. Yellow: runs, with part of the experts read from the SSD (slower). Red: does not fit this PC. Requirements come from this Strata checkout's setup.py; they are setup's estimates."/>
@@ -659,7 +661,7 @@ function Remove-Model($Row) {
     if ($r.error) { Set-Status "Removing $($Row.Model) failed: $($r.error)"; return }
     $settings.LastConfig = ''
     Read-Configs; Update-ServicePicker; Update-SessionList
-    $script:catalog = $null
+    Update-CatalogFit   # the Models tab's "installed" marks
     Set-Status ("Removed $($Row.Model) and freed $(& $fmt $plan.bytes)." + $(if (@($r.failed).Count) { ' Not removed (in use?): ' + (@($r.failed) -join '; ') } else { '' }))
 }
 
@@ -3036,6 +3038,7 @@ function Update-CatalogFit {
             RamFit    = $ramFit
             DiskFit   = $diskFit
             Installed = $(if ($isInstalled) { 'yes' } else { '' })
+            Key       = ('{0}-{1}' -f $m.name, $m.quant).ToLower()   # the installed config's model name
             Level     = $level
             About     = "$($m.title) $($m.quant): $($m.about). Family: $($m.family_about)." +
                 $(if ($m.arena_gb) { " Experts: $($m.arena_gb) GB." } else { '' }) +
@@ -3241,8 +3244,16 @@ $ui.DataBrowse.Add_Click({
 $ui.CatalogList.Add_SelectionChanged({
     $row = $ui.CatalogList.SelectedItem
     if ($row) { $ui.CatDetail.Text = $row.About }
+    $ui.CatRemoveBtn.IsEnabled = [bool]($row -and $row.Installed)
 })
 $ui.InstallBtn.Add_Click({ Install-CatalogModel })
+$ui.CatRemoveBtn.Add_Click({
+    $row = $ui.CatalogList.SelectedItem
+    if (-not $row -or -not $row.Installed) { return }
+    $cfg = $script:configs | Where-Object { $_.Model.ToLower() -eq $row.Key } | Select-Object -First 1
+    if (-not $cfg) { Set-Status "No config for $($row.Title) $($row.Quant) in this Strata folder; press Refresh."; return }
+    Remove-Model $cfg
+})
 
 $ui.CfgSaveBtn.Add_Click({ Save-ConfigEditor })
 $ui.CfgRevertBtn.Add_Click({ if ($script:cfgEdit) { Open-ConfigEditor $script:cfgEdit.Row -Force } })

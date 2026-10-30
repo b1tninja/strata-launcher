@@ -43,8 +43,9 @@ Run the setup file or the one-line install again. Strata itself updates from the
 
 ## Removing models
 
-Models are what take the space (58-190 GB each). Select one in the list and press **Launch ›
-Remove model...**. Strata itself works out what belongs to that model alone: all parts of its
+Models are what take the space (58-190 GB each). In the **Models** tab, select an installed model
+(**Installed: yes**) and press **Remove...**; or select it in the list at the top and press **Launch
+› Remove model...**. Strata itself works out what belongs to that model alone: all parts of its
 files, their download marks and partial downloads, its config, `.bak`, log and `run-*.bat`. Files
 another installed model still uses stay, and so do files of your own outside Strata's folders. The
 confirmation lists what is deleted and kept, and how much it frees. A running model, or the
