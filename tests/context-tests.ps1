@@ -38,6 +38,9 @@ Assert-Is (Get-ClineContext 1048576) 943718 '1M - 10%'
 Assert-Is (Get-ClineContext 8192) 4096 '8192: the 4096 floor beats 10%'
 $ReservePercent = 5
 Assert-Is (Get-ClineContext 131072) 124518 '5% headroom'
+$ReservePercent = 2   # the default since Cline CLI 3 overcounts (compacted at 325,817 real of 471,859 told)
+Assert-Is (Get-ClineContext 524288) 513802 '512K - 2% (the default)'
+Assert-Is (Get-ClineContext 131072) 126976 '128K at 2%: the 4096 floor beats 2%'
 $ReservePercent = 10
 Assert-Is (Get-ClineContext 4096) 2048 '4096 -> half, not 0'
 Assert-Is (Get-ClineContext 1024) 1024 'tiny context stays usable'
@@ -77,6 +80,11 @@ $ui = [pscustomobject]@{ CtxBox = [pscustomobject]@{ Text = '(config)' } }
 $noCfg = [pscustomobject]@{ Port = 8081; Cfg = [pscustomobject]@{ args = @('--kv', 'int8') } }
 Assert-Is (Get-RowContext $noCfg) 0 'nothing known -> 0 (Open Cline refuses instead of guessing)'
 Assert-Is (Get-ClineContext 131072) 117964 'GUI reserve matches the launcher'
+# the two scripts' defaults stay in step
+$guiDefault = [regex]::Match((Get-Content -LiteralPath $gui -Raw), '(?m)^\$ClineReservePercent = (\d+)').Groups[1].Value
+$lnDefault = [regex]::Match((Get-Content -LiteralPath $launcher -Raw), '\[int\]\$ReservePercent = (\d+)').Groups[1].Value
+Assert-Is $guiDefault $lnDefault 'the GUI''s default headroom is cline-strata.ps1''s'
+Assert-Is $guiDefault '2' 'default headroom'
 $ui = [pscustomobject]@{ CtxBox = [pscustomobject]@{ Text = '524288  (yarn x2, experimental)' } }
 Assert-Is (Get-RowContext $noCfg) 524288 'a labelled step reads as its number'
 

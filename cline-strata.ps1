@@ -13,7 +13,7 @@ param(
     [int]$Context = 0,
     # Share of the context held back from Cline (at least $ContextReserve tokens) - see Get-ClineContext.
     [ValidateRange(1, 50)]
-    [int]$ReservePercent = 10,
+    [int]$ReservePercent = 2,
     # The Strata folder. Empty: strata-launcher's setting beside this script, else $env:STRATA_ROOT.
     [string]$StrataRoot,
     # What starts the server when none answers. Empty: the newest run-*.bat Strata's setup wrote.
@@ -67,15 +67,16 @@ function Test-StrataHealth {
 }
 
 # The context Cline is told the model's window is: a little under what the server really has.
-# Cline compacts once its own estimate of the prompt reaches 0.9 of the number it is given, and a
-# Strata server never truncates: a prompt over the engine's window is refused with a 400, and so
-# is every request that follows it - the session cannot get back under the window by itself. So a
-# context larger than the server's is the one setting that can never be too high. The reserve
-# covers the difference between Cline's estimate (~chars/4, without the ChatML template, the tool
-# schemas or the image tokens the engine counts), the server's own 8-token slack, and the answer.
-# That error is a share of the prompt, not a fixed number: with 4096 held back from 131072, Cline's
-# log shows it still sent 131118-132455-token prompts (~4.5% over what it believed), so the reserve
-# is $ReservePercent of the context (10%: ~7.7K left for the answer at 128K), never under 4096.
+# A Strata server never truncates (a prompt over the engine's window is refused), so a context
+# larger than the server's is the one setting that can never be too high. Cline CLI 3 (@cline/core)
+# compacts once its estimate of the prompt reaches 0.9 of the number it is given. That estimate is
+# the messages' JSON characters / 3, scaled up by the prompt_tokens the server reported for the
+# previous request when it undercounted (never down when it overcounted). On Qwen and a code session
+# it runs ~30% high: told 471,859 of a 524,288 window, it compacted at 325,817 real tokens. So no
+# undercount is left for a reserve to cover - Cline's own 10% and its overcount keep the prompt well
+# under the window - and a larger reserve only makes it compact earlier still. $ReservePercent is
+# therefore small (2), never under 4096 tokens. (The older Cline counted ~chars/4 with no correction
+# and sent prompts ~4.5% over a 4096-token reserve: the reason it used to be 10%.)
 function Get-ClineContext([int64]$Ctx) {
     if ($Ctx -le 0) { return 0 }
     $half = [int64][Math]::Max(1024, [int][Math]::Ceiling($Ctx * 0.5))

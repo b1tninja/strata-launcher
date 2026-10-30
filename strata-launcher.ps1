@@ -26,7 +26,7 @@ $ThinkingLevels = @('none', 'low', 'medium', 'high', 'xhigh')
 $LoadTimeoutMinutes = 30
 # Tokens held back from the context Cline is told about - see Get-ClineContext.
 $ClineContextReserve = 4096
-$ClineReservePercent = 10     # the Headroom box
+$ClineReservePercent = 2      # the Headroom box
 $TrainedContext = 262144      # the model's trained window: past it Strata needs rope scaling
 $ServiceLog = Join-Path $PSScriptRoot 'strata-service.log'
 $ServiceErrLog = Join-Path $PSScriptRoot 'strata-service.err.log'
@@ -115,7 +115,8 @@ $defaults = [ordered]@{
     FitMaxTokens  = $true
     ResumeFirst   = $false
     SvcHibernate  = $false
-    ReservePercent = '10'
+    ReservePercent = '2'
+    HeadroomV2    = $false   # a saved 10 is the old default: moved to 2 once (see Get-ClineContext)
     OpenWeb       = $false
     Minimized     = $false
     UnloadOllama  = $true
@@ -330,7 +331,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
               <ComboBox x:Name="ThinkingBox" Width="200" Margin="0,0,16,0"/>
               <TextBlock Text="Headroom" Style="{StaticResource Label}"/>
               <ComboBox x:Name="ReserveBox" Width="70" Margin="0,0,16,0"
-                        ToolTip="Share of the context Cline is not told about, so it compacts before the server refuses a prompt (at least 4096 tokens). Cline undercounts by ~4-5%; 10% leaves room for the answer too."/>
+                        ToolTip="Share of the context Cline is not told about (at least 4096 tokens). Cline compacts at 90% of what it is told, and counts characters / 3, which runs ~30% over Qwen's real count on code - so it compacts early anyway; it corrects an undercount by itself after each request. 2% keeps the most of the window; raise it only if a prompt is ever refused as too long."/>
               <Button x:Name="ClineBtn" Content="Open Cline" FontWeight="SemiBold"/>
             </StackPanel>
             <CheckBox x:Name="ResumeChk" Margin="110,6,0,0" Content="Resume the latest session first (when the model has one)"/>
@@ -1110,18 +1111,18 @@ function Get-RowContext($Row) {
 }
 
 function Get-ClineContext([int64]$Ctx) {
-    # The number Cline is told the window is: a little under what the server really has.
-    # Cline only compacts once its own estimate of the prompt reaches 0.9x this number, and a
-    # Strata server never truncates: a prompt that outgrows the engine is refused with a 400,
-    # and every request that follows with it - the session cannot recover on its own. Cline's
-    # estimate counts ~chars/4 and misses the ChatML template, the tool schemas and the image
-    # tokens the engine really counts, so it sits under the true number (it corrects itself with
-    # the reported prompt_tokens, but only after the first oversized request). The reserve covers
-    # that error, the server's own CTX_SLACK (8) and the answer's room. The launcher runs the same
-    # formula on the number it is handed (tests\context-tests.ps1 keeps the two in step) and the
+    # The number Cline is told the window is: a little under what the server really has. Strata never
+    # truncates (a prompt over the window is refused), so Cline must compact first. Cline CLI 3
+    # (@cline/core) compacts once its estimate reaches 0.9x this number; the estimate is JSON chars / 3,
+    # and it scales an undercount up by the prompt_tokens the server reported for the previous request
+    # (never an overcount down). On Qwen and a code session that estimate runs ~30% high: told 471,859
+    # of a 524,288 window, it compacted at 325,817 real tokens. So the reserve no longer has an
+    # undercount to cover - Cline's own 10% and its overcount already hold the prompt well under the
+    # window - and a large one only compacts earlier still. It is a small share ($ClineReservePercent,
+    # the Headroom box, default 2), never under $ClineContextReserve. (The older Cline undercounted,
+    # ~chars/4 with no correction, and sent prompts ~4.5% over a 4096 reserve: the reason it was 10%.)
+    # cline-strata.ps1 runs the same formula (tests\context-tests.ps1 keeps the two in step) and the
     # status bar shows both numbers when Cline opens.
-    # The reserve is a share of the context ($ClineReservePercent, the Headroom box), never under
-    # $ClineContextReserve: Cline's log showed it still sending prompts ~4.5% over a 4096-token reserve.
     if ($Ctx -le 0) { return 0 }
     $half = [int64][Math]::Max(1024, [int][Math]::Ceiling($Ctx * 0.5))
     $reserve = [Math]::Max([int64]$ClineContextReserve, [int64][Math]::Ceiling($Ctx * $ClineReservePercent / 100.0))
@@ -3232,8 +3233,12 @@ $ui.FitChk.IsChecked = [bool]$settings.FitMaxTokens
 # MTP overrides start at the config's own settings every time: a forgotten "off" would quietly slow every run
 $ui.MtpBox.ItemsSource = @('(config)', 'on', 'off (prompt lookup only)'); $ui.MtpBox.SelectedIndex = 0
 $ui.SpecBox.ItemsSource = @('(config)') + @(1..8 | ForEach-Object { [string]$_ }); $ui.SpecBox.SelectedIndex = 0
-foreach ($v in @('5', '10', '15', '20')) { [void]$ui.ReserveBox.Items.Add($v) }
-$ui.ReserveBox.SelectedItem = $(if (@('5', '10', '15', '20') -contains [string]$settings.ReservePercent) { [string]$settings.ReservePercent } else { '10' })
+foreach ($v in @('2', '5', '10', '15', '20')) { [void]$ui.ReserveBox.Items.Add($v) }
+if (-not $settings.HeadroomV2) {
+    if ([string]$settings.ReservePercent -eq '10') { $settings.ReservePercent = '2' }   # the old default, not a choice
+    $settings.HeadroomV2 = $true
+}
+$ui.ReserveBox.SelectedItem = $(if (@('2', '5', '10', '15', '20') -contains [string]$settings.ReservePercent) { [string]$settings.ReservePercent } else { '2' })
 $ClineReservePercent = [int]$ui.ReserveBox.SelectedItem
 $ui.ReserveBox.Add_SelectionChanged({ $script:ClineReservePercent = [int]$ui.ReserveBox.SelectedItem; Update-CtxHint })
 $ui.CtxBox.Add_SelectionChanged({ $window.Dispatcher.BeginInvoke([action]{ Update-CtxHint }) | Out-Null })

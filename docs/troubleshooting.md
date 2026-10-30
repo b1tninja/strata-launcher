@@ -25,6 +25,11 @@ itself: install Git in the Setup tab, then **Make it updatable**.
 `cline-strata.ps1`) rather than on its own, so it is given the running server's real limit. Raise
 the **Headroom** setting if a long conversation still overflows. [Details](using.md#cline)
 
+**Cline compacts long before the context is full.** Expected, and not the launcher's limit: Cline
+compacts at 90% of the limit by its own estimate (characters / 3), which runs ~30% high on code with
+Qwen, so a 512K window compacts around 330-360K real tokens. The Headroom setting (2%) is already the
+smallest that is safe; the rest is Cline's estimate.
+
 **A server will not stop, or another one stops.** Strata Launcher only stops servers it recognises
 (its own, or one whose `/health` names the selected config's model). A server started elsewhere on
 the same port with another model is left alone; stop it where it was started.

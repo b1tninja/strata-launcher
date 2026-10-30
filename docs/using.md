@@ -38,16 +38,20 @@ it also drafts from earlier repeats in the context (prompt lookup), which pays o
 ## Cline
 
 Strata never truncates a prompt: once a conversation outgrows the model's context, every request
-fails. Cline only compacts a conversation against the limit it was told, and its own token count
-runs a few percent under Strata's. **Open Cline** therefore tells Cline a limit with headroom (10%
-of the context by default, the **Headroom** setting, never under 4,096 tokens) taken from what the
-running server reports, and writes it everywhere Cline reads it, every time.
+fails. Cline only compacts a conversation against the limit it was told. **Open Cline** therefore
+tells Cline a limit taken from what the running server reports (including a context extended with
+yarn), just under it (the **Headroom** setting: 2% by default, never under 4,096 tokens), and writes
+it everywhere Cline reads it, every time.
 
-- Cline compacts at 90% of the limit in its model entry, and skips automatic compaction entirely for
-  a custom model with no limit.
-- With a flat 4,096-token reserve, Cline's log still showed prompts of 131,118-132,455 tokens sent
-  to a 131,072-token server after it had been told 126,976: its estimate is ~4-5% low, so the reserve
-  is a share of the context.
+- Cline compacts at 90% of the limit in its model entry (fixed in its code), and skips automatic
+  compaction entirely for a custom model with no limit.
+- Cline CLI 3 estimates a prompt as its JSON characters / 3. On Qwen and a code session that runs
+  ~30% over the real count, so Cline compacts well before the window is full: told 471,859 of a
+  524,288-token (yarn x2) window, it compacted at 325,817 real tokens. It corrects an undercount by
+  itself (from the token count the server reports for each request), but not that overcount, so a
+  bigger headroom only compacts earlier still. At 2% the same session would compact at ~358K.
+- The older Cline counted ~chars/4 without correcting itself and sent prompts ~4-5% over what it
+  was told; raise **Headroom** if a version of Cline ever has a prompt refused as too long.
 - Cline re-imports its legacy `globalState.json` into `providers.json` at every start, so the limit is
   written to `models.json`, `providers.json` and `globalState.json` on every launch.
 - Those files are written as plain UTF-8: Windows PowerShell 5.1 adds a byte-order mark that Node's
