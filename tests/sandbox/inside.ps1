@@ -111,6 +111,10 @@ if ($Local) {
 Check (Test-Path (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Strata Launcher.lnk')) 'install.ps1: desktop shortcut'
 Check (Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'Strata Launcher.lnk')) 'install.ps1: Start menu shortcut'
 Check ((Get-ItemProperty 'HKCU:\Software\StrataLauncher' -EA SilentlyContinue).AppDir -eq $gui) 'install.ps1: AppDir in the registry'
+$appsKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\StrataLauncher'
+$entry = Get-ItemProperty $appsKey -EA SilentlyContinue
+Log "Settings > Apps: $($entry.DisplayName) $($entry.DisplayVersion), $([int]($entry.EstimatedSize / 1024)) MB, uninstall: $($entry.UninstallString)"
+Check ($entry.DisplayName -eq 'Strata Launcher' -and $entry.DisplayVersion -match '^\d+\.\d+') 'install.ps1: listed in Settings > Apps with its version'
 
 # 2. first start: the dialog, on a PC without Strata (the web install has started the launcher already)
 if ($Local) {
@@ -193,13 +197,52 @@ if (Run-Step $win $p.Id 'Set up winget' 'winget' 900) {
 Shot 'after-winget'
 Log 'final setup steps:'; Setup-Steps $win | ForEach-Object { Log "    $_" }
 Shot-Window $win 'setup'
+
+# 7b. Remove model: two small stand-in models (a two-part file, and a file both use) in Strata's model folder;
+# removing one takes its parts and its config, and keeps what the other still uses
+if (-not $SkipPcCheck) {
+    $md = 'C:\Strata-data\test-models'; New-Item -ItemType Directory -Force "$md\a", "$md\b" | Out-Null
+    foreach ($f in "$md\a\ta-00001-of-00002.gguf", "$md\a\ta-00002-of-00002.gguf", "$md\b\tb.gguf", "$md\shared.gguf") {
+        $fs = [IO.File]::Create($f); $fs.SetLength(4MB); $fs.Close(); Set-Content "$f.done" 'ok'
+    }
+    foreach ($t in @(@('test-a', "$md\a\ta-00001-of-00002.gguf"), @('test-b', "$md\b\tb.gguf"))) {
+        [IO.File]::WriteAllText("C:\Strata\strata-$($t[0]).json", (@{ exe = 'x'; model_name = $t[0]; args = @('--native', $t[1], '--mtp-gguf', "$md\shared.gguf") } | ConvertTo-Json))
+    }
+    Press (All $win | Where-Object { $_.Current.ControlType -eq $CT::Button -and $_.Current.Name -eq 'Refresh' } | Select-Object -First 1)
+    Start-Sleep 3
+    $list = ById $win 'ConfigList'
+    $row = All $list | Where-Object { (All $_ | ForEach-Object { $_.Current.Name }) -contains 'test-a' } | Select-Object -First 1
+    if (-not $row) { Check $false 'Remove model: the test model is listed' }
+    else {
+        $row.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); Start-Sleep 1
+        Press (All $win | Where-Object { $_.Current.ControlType -eq $CT::Button -and $_.Current.Name -eq 'Remove model...' } | Select-Object -First 1)
+        $said = Confirm-Box $p.Id
+        Log "remove model asked: $($said -replace "`r?`n", ' / ')"
+        Check ($said -match 'ta-00002-of-00002\.gguf' -and $said -match 'Kept:' -and $said -match 'shared\.gguf') 'Remove model: lists both parts and keeps the shared file'
+        Start-Sleep 5
+        Check (-not (Test-Path "$md\a\ta-00001-of-00002.gguf") -and -not (Test-Path "$md\a\ta-00002-of-00002.gguf")) 'Remove model: both parts deleted'
+        Check (-not (Test-Path 'C:\Strata\strata-test-a.json')) 'Remove model: its config deleted'
+        Check ((Test-Path "$md\shared.gguf") -and (Test-Path "$md\b\tb.gguf") -and (Test-Path 'C:\Strata\strata-test-b.json')) 'Remove model: the other model and the shared file stay'
+        Log "status: $((ById $win 'StatusText').Current.Name)"
+    }
+}
 if ($Local) {
     $err = Get-Content "$out\gui-err.txt" -ErrorAction SilentlyContinue
     Check (-not $err) 'the GUI wrote no errors'
 } else {
-    # 8. uninstall, with the launcher still open
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$src\install.ps1" -Uninstall *>> "$out\install.txt"
+    # 8. uninstall the way Settings > Apps does - its UninstallString - with the launcher still open
+    $u = [regex]::Match([string](Get-ItemProperty $appsKey -EA SilentlyContinue).UninstallString, '^"([^"]+)"\s+(.*)$')
+    if (-not $u.Success) { Check $false 'uninstall: Settings > Apps has an uninstall command' }
+    else {
+        $un = Start-Process -FilePath $u.Groups[1].Value -ArgumentList $u.Groups[2].Value -PassThru
+        $said = Confirm-Box $un.Id
+        Log "uninstall said: $said"
+        Check ($said -match 'is uninstalled') 'uninstall: it says what it did'
+        [void]$un.WaitForExit(30000)
+    }
     Start-Sleep 2
+    Check (-not (Test-Path $appsKey)) 'uninstall: gone from Settings > Apps'
+    Check (-not (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) 'uninstall: the open launcher was closed'
     Check (-not (Test-Path $gui)) 'uninstall: the launcher''s folder is gone'
     Check (-not (Test-Path (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Strata Launcher.lnk'))) 'uninstall: no desktop shortcut'
     Check (-not (Test-Path 'HKCU:\Software\StrataLauncher')) 'uninstall: no registry key'

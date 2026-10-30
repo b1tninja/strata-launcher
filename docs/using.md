@@ -5,7 +5,7 @@ context, port and live server status. Select one to launch it, or several to ben
 
 | Tab | |
 | --- | --- |
-| **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve and more; your config files are never changed. **Sessions** and **Open Cline** are here too (below). |
+| **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve and more; your config files are never changed. **Remove model...** deletes a model's files and config ([details](setup.md#removing-models)). **Sessions** and **Open Cline** are here too (below). |
 | **Benchmark** | Runs Strata's `strata_bench.py` against one or several models in turn, starting and stopping their servers, with live output. |
 | **Results** | Every benchmark run as a table (decode and prompt speed, time to first token, cache hits); compare two side by side. |
 | **Models** | Strata's model catalog with download size, disk and RAM needs against this PC, colour-coded by fit, and an install button. |

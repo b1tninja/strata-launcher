@@ -16,6 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+$AppVersion = '0.2.0'   # install.ps1 reads this line for the Settings > Apps entry
 $SettingsPath = Join-Path $PSScriptRoot 'strata-launcher.settings.json'
 # Named strata-gui before: carry its settings over once.
 $oldSettings = Join-Path $PSScriptRoot 'strata-gui.settings.json'
@@ -250,6 +251,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
               <Button x:Name="WebBtn" Content="Open web UI"/>
               <Button x:Name="LogBtn" Content="Open engine log"/>
               <Button x:Name="ConfigBtn" Content="Open config"/>
+              <Button x:Name="RemoveModelBtn" Content="Remove model..." ToolTip="Delete this model's files and config to free the disk space (Strata decides what is safe to delete; files another model uses stay)"/>
             </WrapPanel>
 
             <Separator Margin="0,16,0,12"/>
@@ -594,6 +596,71 @@ function Get-Python {
     $py = Join-Path (Get-Root) '.venv\Scripts\python.exe'
     if (Test-Path -LiteralPath $py) { return $py }
     return $null
+}
+
+# Removing a model: Strata's own removal plan (tools/strata_mcp.py, the code its desktop and terminal apps use)
+# says which files are the model's alone - a file another installed model's config names stays, and so does a
+# file outside Strata's folders that Strata did not download - plus its config, .bak, log and run-*.bat.
+$StrataRemovePy = @'
+import importlib.util, json, sys
+from pathlib import Path
+root, tag, action = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+out, sys.stdout = sys.stdout, sys.stderr          # only the JSON answer goes to stdout
+try:
+    sys.path.insert(0, str(root))
+    spec = importlib.util.spec_from_file_location("strata_mcp_for_launcher", root / "tools" / "strata_mcp.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    try:
+        s = mod.Strata(root, root)
+    except TypeError:                             # an older Strata: Strata(root) only
+        s = mod.Strata(root)
+    if not hasattr(s, "removal_plan") or not hasattr(mod, "Tools"):
+        r = {"error": "this Strata is too old to remove models from here: update it first (Setup tab)"}
+    elif action == "plan":
+        r = s.removal_plan(s.find_config(tag))
+    else:
+        r = mod.Tools(s).strata_remove(tag, confirm=True)
+except Exception as e:
+    r = {"error": str(e) or type(e).__name__}
+out.write(json.dumps(r))
+'@
+
+function Invoke-StrataRemove([string]$Tag, [string]$Action) {
+    # -> Strata's answer (plan, or what was deleted), or @{ error } when it could not be asked
+    $py = Get-Python
+    if (-not $py) { return [pscustomobject]@{ error = "Strata's Python environment (.venv) is not set up: run the PC check in the Setup tab" } }
+    if (-not (Test-Path -LiteralPath (Join-Path (Get-Root) 'tools\strata_mcp.py'))) { return [pscustomobject]@{ error = 'this Strata is too old to remove models from here: update it first (Setup tab)' } }
+    if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
+    $script = Join-Path $TempDir 'strata-remove.py'
+    [IO.File]::WriteAllText($script, $StrataRemovePy, (New-Object Text.UTF8Encoding $false))
+    $old = $env:PYTHONUTF8; $env:PYTHONUTF8 = '1'
+    try { $json = & $py $script (Get-Root) $Tag $Action 2>$null | Out-String } finally { $env:PYTHONUTF8 = $old }
+    try { return ($json | ConvertFrom-Json) } catch { return [pscustomobject]@{ error = "Strata gave no answer ($($json.Trim()))" } }
+}
+
+function Remove-Model($Row) {
+    if (Test-RowRunning $Row) { Set-Status "$($Row.Model) is running: stop it first, then remove it."; return }
+    if (Test-ServiceRow $Row) { Set-Status "$($Row.Model) is the Service tab's model: remove the service first, then the model."; return }
+    $tag = [IO.Path]::GetFileNameWithoutExtension($Row.File) -replace '^strata-', ''
+    Set-Status "Asking Strata what removing $($Row.Model) deletes..."
+    $plan = Invoke-StrataRemove $tag 'plan'
+    if ($plan.error) { Set-Status "Cannot remove $($Row.Model): $($plan.error)"; return }
+    $fmt = { param($b) if ($b -ge 1GB) { '{0:n1} GB' -f ($b / 1GB) } elseif ($b -ge 1MB) { '{0:n0} MB' -f ($b / 1MB) } else { '{0:n0} KB' -f ($b / 1KB) } }
+    $lines = @($plan.remove | Sort-Object bytes -Descending | ForEach-Object { "  $(& $fmt $_.bytes)`t$($_.path)" })
+    if ($lines.Count -gt 14) { $lines = $lines[0..12] + "  ... and $($lines.Count - 13) more" }
+    $kept = @($plan.keep | ForEach-Object { "  $($_.path)`n      ($($_.reason))" })
+    $msg = "Remove $($Row.Model) ($($Row.File))? This frees $(& $fmt $plan.bytes) and cannot be undone.`n`nDeleted:`n$($lines -join "`n")" +
+        $(if ($kept) { "`n`nKept:`n$($kept -join "`n")" } else { '' }) +
+        $(if (Get-SessionDir $Row) { "`n`nIts session files (in $(Get-SessionDir $Row)) are kept." } else { '' })
+    if ([System.Windows.MessageBox]::Show($msg, 'Remove model', 'OKCancel', 'Warning') -ne 'OK') { Set-Status 'Nothing was removed.'; return }
+    $window.Cursor = [System.Windows.Input.Cursors]::Wait
+    try { $r = Invoke-StrataRemove $tag 'delete' } finally { $window.Cursor = $null }
+    if ($r.error) { Set-Status "Removing $($Row.Model) failed: $($r.error)"; return }
+    $settings.LastConfig = ''
+    Read-Configs; Update-ServicePicker; Update-SessionList
+    $script:catalog = $null
+    Set-Status ("Removed $($Row.Model) and freed $(& $fmt $plan.bytes)." + $(if (@($r.failed).Count) { ' Not removed (in use?): ' + (@($r.failed) -join '; ') } else { '' }))
 }
 
 function Get-ArgValue($ArgList, [string]$Name) {
@@ -3002,11 +3069,11 @@ function Select-Folder([string]$Initial, [string]$Description) {
     return $null
 }
 
-# The Strata folder: the registered one (HKCU\Software\StrataLauncher) while it is still a checkout, then
-# the one an older version saved in its settings file; with neither, the first-run dialog asks:
-# an existing checkout, or a fresh install that the Setup tab carries out.
+# The Strata folder: -StrataRoot when given, then the registered one (HKCU\Software\StrataLauncher) while it
+# is still a checkout, then the one an older version saved in its settings file; with none, the first-run
+# dialog asks: an existing checkout, or a fresh install that the Setup tab carries out.
 $firstChoice = $null
-$foundRoot = foreach ($c in @((Get-StrataReg 'StrataRoot'), [string]$settings.StrataRoot)) { if (Test-StrataFolder (Clean-Path $c)) { Clean-Path $c; break } }
+$foundRoot = foreach ($c in @($StrataRoot, (Get-StrataReg 'StrataRoot'), [string]$settings.StrataRoot)) { if ($c -and (Test-StrataFolder (Clean-Path $c))) { Clean-Path $c; break } }
 if ($FirstRun) { $foundRoot = $null }
 if (-not $foundRoot -and -not $StrataRoot) {
     $firstChoice = Show-FirstRunDialog
@@ -3112,6 +3179,10 @@ $ui.ConfigBtn.Add_Click({
     if (-not $row) { return }
     $ui.Tabs.SelectedItem = $ui.ConfigTab
     Open-ConfigEditor $row
+})
+$ui.RemoveModelBtn.Add_Click({
+    $row = Get-Selected
+    if ($row) { Remove-Model $row }
 })
 $ui.ClineBtn.Add_Click({
     $row = Get-Selected

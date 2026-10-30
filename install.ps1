@@ -12,31 +12,48 @@ param(
     [string]$Repo = 'https://github.com/b1tninja/strata-launcher',
     [switch]$NoShortcuts,
     [switch]$NoStart,
-    # Remove strata-launcher: its shortcuts, its registry key and (when it was downloaded, not a clone you
-    # run it from) its folder. Strata, the models, Python, Git, Node.js and Cline stay.
-    [switch]$Uninstall
+    # Remove strata-launcher: its shortcuts, its Settings > Apps entry, its registry key, the Service tab's
+    # scheduled task and (when this installer downloaded it, not a clone you run it from) its folder.
+    # Strata, the models, Python, Git, Node.js and Cline stay. Models are removed in the app (Remove model).
+    [switch]$Uninstall,
+    # Set by the Settings > Apps entry: the result is shown in a message box, as there is no console to read.
+    [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
+$AppsKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\StrataLauncher'
 
 if ($Uninstall) {
+    $said = New-Object System.Collections.Generic.List[string]
+    # the Service tab's background task runs strata-launcher.ps1 -Service: it goes first
+    if (Get-ScheduledTask -TaskName 'Strata on-demand' -ErrorAction SilentlyContinue) {
+        Stop-ScheduledTask -TaskName 'Strata on-demand' -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName 'Strata on-demand' -Confirm:$false -ErrorAction SilentlyContinue
+        $said.Add('Removed the Service tab''s background task.')
+    }
     foreach ($folder in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))) {
         foreach ($n in 'Strata Launcher.lnk', 'Strata GUI.lnk') { Remove-Item -LiteralPath (Join-Path $folder $n) -ErrorAction SilentlyContinue }
     }
     $app = (Get-ItemProperty -Path 'HKCU:\Software\StrataLauncher' -ErrorAction SilentlyContinue).AppDir
-    Remove-Item -Path 'HKCU:\Software\StrataLauncher', 'HKCU:\Software\StrataGui' -Recurse -ErrorAction SilentlyContinue
-    # only the folder this installer downloads into, and only when it holds strata-launcher
+    Remove-Item -Path 'HKCU:\Software\StrataLauncher', 'HKCU:\Software\StrataGui', $AppsKey -Recurse -ErrorAction SilentlyContinue
+    # only the folder this installer downloads into, and only when it holds strata-launcher; a clone stays
     $own = Join-Path $env:LOCALAPPDATA 'Programs\strata-launcher'
-    if ((Test-Path -LiteralPath (Join-Path $own 'strata-launcher.ps1')) -and $PSScriptRoot -ne $own) {
-        # a running launcher holds the folder (its working folder): close it first
+    if (Test-Path -LiteralPath (Join-Path $own 'strata-launcher.ps1')) {
+        # a running launcher holds the folder (its working folder): close it first; so would this script's own
+        # working folder when Settings > Apps runs it from there
         Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-            Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf("$own\strata-launcher.ps1", [StringComparison]::OrdinalIgnoreCase) -ge 0 } |
+            Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.IndexOf("$own\strata-launcher.ps1", [StringComparison]::OrdinalIgnoreCase) -ge 0 } |
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Set-Location -LiteralPath $env:TEMP
         Start-Sleep -Milliseconds 500
-        Remove-Item -LiteralPath $own -Recurse -Force
-        Write-Host "Removed $own"
-    } elseif ($app) { Write-Host "Left $app as it is (delete it yourself if you like)." }
-    Write-Host 'Strata Launcher is uninstalled. Strata, its models and the tools the Setup tab installed are still there.'
+        try { Remove-Item -LiteralPath $own -Recurse -Force; $said.Add("Removed $own.") }
+        catch { $said.Add("Could not remove all of $own ($($_.Exception.Message)); delete what is left yourself.") }
+    } elseif ($app) { $said.Add("Left $app as it is (delete it yourself if you like).") }
+    $said.Add('Strata Launcher is uninstalled. Strata, its models and the tools the Setup tab installed are still there.')
+    if ($Quiet) {
+        Add-Type -AssemblyName PresentationFramework
+        [void][System.Windows.MessageBox]::Show(($said -join "`n`n"), 'Strata Launcher', 'OK', 'Information')
+    } else { $said | ForEach-Object { Write-Host $_ } }
     return
 }
 
@@ -83,6 +100,21 @@ Get-ChildItem -LiteralPath $Dir -Recurse -Include *.ps1 -File | Unblock-File
 $key = 'HKCU:\Software\StrataLauncher'
 if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
 Set-ItemProperty -Path $key -Name AppDir -Value $Dir
+
+# Settings > Apps > Installed apps (per user, no admin rights): its Uninstall runs this file with -Uninstall.
+$version = [regex]::Match((Get-Content -LiteralPath $gui -Raw), "(?m)^\`$AppVersion = '([^']+)'").Groups[1].Value
+if (-not (Test-Path $AppsKey)) { New-Item -Path $AppsKey -Force | Out-Null }
+$installer = Join-Path $Dir 'install.ps1'
+$sizeKb = [int]((Get-ChildItem -LiteralPath $Dir -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1KB)
+$entry = @{
+    DisplayName = 'Strata Launcher'; DisplayVersion = $(if ($version) { $version } else { '0' }); Publisher = 'b1tninja'
+    DisplayIcon = (Join-Path $Dir 'assets\strata-launcher.ico'); InstallLocation = $Dir; InstallDate = (Get-Date -Format 'yyyyMMdd')
+    URLInfoAbout = $Repo; HelpLink = "$Repo/blob/main/docs/troubleshooting.md"
+    UninstallString = "`"$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$installer`" -Uninstall -Quiet"
+}
+foreach ($k in $entry.Keys) { Set-ItemProperty -Path $AppsKey -Name $k -Value $entry[$k] }
+foreach ($k in 'NoModify', 'NoRepair') { New-ItemProperty -Path $AppsKey -Name $k -Value 1 -PropertyType DWord -Force | Out-Null }
+New-ItemProperty -Path $AppsKey -Name EstimatedSize -Value $sizeKb -PropertyType DWord -Force | Out-Null
 
 $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $launch = "-NoProfile -WindowStyle Hidden -STA -ExecutionPolicy Bypass -File `"$gui`""

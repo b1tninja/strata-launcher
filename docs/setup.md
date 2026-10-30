@@ -41,14 +41,26 @@ shortcuts over on first start.
 Run the setup file or the one-line install again. Strata itself updates from the **Setup** tab
 (**Update**), through Strata's own `UPDATE.bat`.
 
+## Removing models
+
+Models are what take the space (58-190 GB each). Select one in the list and press **Launch ›
+Remove model...**. Strata itself works out what belongs to that model alone: all parts of its
+files, their download marks and partial downloads, its config, `.bak`, log and `run-*.bat`. Files
+another installed model still uses stay, and so do files of your own outside Strata's folders. The
+confirmation lists what is deleted and kept, and how much it frees. A running model, or the
+**Service** tab's model, has to be stopped or removed from the service first. Session files are
+kept. This needs a Strata from late October 2026 or newer: update an older one in the Setup tab
+first.
+
 ## Uninstall
 
-In PowerShell:
+**Settings › Apps › Installed apps › Strata Launcher › Uninstall**, or in PowerShell:
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/b1tninja/strata-launcher/main/install.ps1))) -Uninstall
 ```
 
-That removes Strata Launcher's shortcuts, its registry key and its folder in
-`%LOCALAPPDATA%\Programs`. Strata, the models and the tools from the Setup tab stay; remove those
-from the table above if you want them gone (Git and Node.js from winget through **Settings › Apps**).
+That closes Strata Launcher and removes its folder in `%LOCALAPPDATA%\Programs`, its shortcuts, its
+registry key and the **Service** tab's background task. Strata, the models and the tools from the
+Setup tab stay: remove models in the app first if you want the space back, and the rest from the
+table above (Git and Node.js from winget through **Settings › Apps**, Strata by deleting its folder).

@@ -25,7 +25,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\sandbox\run-sandbox.ps
 The last one is the **first-time-user test**. In Windows Sandbox (a clean Windows with no winget,
 Git, Python, Node.js or graphics driver) it installs Strata Launcher with the setup file, goes
 through the first start, downloads Strata, installs Git, runs the PC check (Python through uv),
-makes Strata updatable, installs Node.js and Cline and sets up winget, checking each step and saving
+makes Strata updatable, installs Node.js and Cline, sets up winget, removes a stand-in model and
+uninstalls through the Settings › Apps entry, checking each step and saving
 a log and screenshots (`window-setup.png` is the README's screenshot). Without `-Local` it installs
 from GitHub's `main`, so push first; `-Local` uses your working copy. While it runs,
 `tests\sandbox\peek-sandbox.ps1` shows what is happening inside. It needs Windows 11 24H2 or newer
@@ -47,6 +48,9 @@ Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM
   Python install when `.venv` exists. Its own route (winget or python.org's installer) is a set of
   Windows Installer packages; in Windows Sandbox each one waited two minutes on Windows Installer's
   policy check, about 15 minutes in all. It stays as the fallback when uv cannot be had.
+- **Remove model** never decides on its own what to delete: it asks Strata (`removal_plan` and
+  `strata_remove` in Strata's `tools/strata_mcp.py`, the code Strata's own apps use) through the
+  `.venv` Python, shows that plan, and has Strata carry it out.
 - Every setup window records how it ended (`ok`, or `failed:` with the reason or exit code), so the
   Setup tab reports a failed step at once instead of waiting on it.
 - Files Node reads (Cline's settings) are written as UTF-8 without a byte-order mark; scripts

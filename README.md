@@ -33,7 +33,9 @@ terminal? This one line does the same:
 irm https://raw.githubusercontent.com/b1tninja/strata-launcher/main/install.ps1 | iex
 ```
 
-Run either again to update. [Uninstall](docs/setup.md#uninstall) is one line too.
+Run either again to update. Models are removed one at a time in the app
+([Remove model](docs/setup.md#removing-models)), and Strata Launcher itself from **Settings › Apps**
+([Uninstall](docs/setup.md#uninstall)).
 
 ## What you get
 
@@ -43,7 +45,8 @@ Run either again to update. [Uninstall](docs/setup.md#uninstall) is one line too
 - **Start and stop models** one at a time, with per-launch context, rope scaling and VRAM overrides
   that never touch your config files.
 - **Benchmarks** of one or several models in turn, and a results table to compare runs.
-- **A model catalog** with each model's disk and RAM needs against this PC.
+- **A model catalog** with each model's disk and RAM needs against this PC, and **Remove model** to
+  get the space back, deleting only what that model alone uses.
 - **A config editor** for Strata's `strata-*.json`, with explanations and a backup on save.
 - **Sessions:** save the conversation the engine holds to disk and resume it later, even after a
   restart.
