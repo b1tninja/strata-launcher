@@ -95,6 +95,42 @@ Assert-Is ($l -join ' ') '--max-context 524288 --rope-scaling linear --rope-scal
 $l = New-Args @('--rope-scaling', 'yarn', '--rope-scale', '4'); Set-ContextArgs $l 524288
 Assert-Is ($l -join ' ') '--rope-scaling yarn --rope-scale 4 --max-context 524288' 'a larger factor than needed is kept'
 
+Write-Host '--- Get-EffectiveConfig (GUI): MTP drafting and depth overrides'
+Invoke-Expression (Get-FunctionText $gui @('Get-EffectiveConfig'))
+$TempDir = Join-Path $env:TEMP ('strata-launcher-tests-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path (Join-Path $TempDir 'data\mtp\rt') | Out-Null
+Set-Content -LiteralPath (Join-Path $TempDir 'data\mtp\rt\experts.bin') -Value 'x'
+function New-Ui([string]$Mtp = '(config)', [string]$Spec = '(config)') {
+    [pscustomobject]@{ CtxBox = [pscustomobject]@{ Text = '(config)' }; ExtraBox = [pscustomobject]@{ Text = '' }
+        VramBox = [pscustomobject]@{ Text = '' }; FitChk = [pscustomobject]@{ IsChecked = $false }
+        MtpBox = [pscustomobject]@{ SelectedItem = $Mtp }; SpecBox = [pscustomobject]@{ SelectedItem = $Spec }
+        DataBox = [pscustomobject]@{ Text = (Join-Path $TempDir 'data') } }
+}
+function Get-RunArgs($Row) { (Get-Content -LiteralPath (Get-EffectiveConfig $Row) -Raw | ConvertFrom-Json).args -join ' ' }
+# the configs live elsewhere: the launcher writes its changed copy to $TempDir under the config's name
+New-Item -ItemType Directory -Path (Join-Path $TempDir 'src') | Out-Null
+$withMtp = Join-Path $TempDir 'src\strata-with.json'
+'{"exe":"x","args":["--native","m.gguf","--spec","4","--mtp","D:\\data\\mtp\\rt","--batch","2","--batch-mtp","--kv","int8"]}' | Set-Content -LiteralPath $withMtp -Encoding ascii
+$without = Join-Path $TempDir 'src\strata-without.json'
+'{"exe":"x","args":["--native","m.gguf","--kv","int8"]}' | Set-Content -LiteralPath $without -Encoding ascii
+$rowWith = [pscustomobject]@{ Path = $withMtp; File = 'strata-with.json' }
+$rowWithout = [pscustomobject]@{ Path = $without; File = 'strata-without.json' }
+try {
+    $ui = New-Ui; Assert-Is (Get-EffectiveConfig $rowWith) $withMtp 'no override: the config itself, no copy'
+    $ui = New-Ui 'off (prompt lookup only)'
+    Assert-Is (Get-RunArgs $rowWith) '--native m.gguf --spec 4 --batch 2 --kv int8' 'off: --mtp and --batch-mtp go, --spec and what followed --batch-mtp stay'
+    $ui = New-Ui '(config)' '6'
+    Assert-Is (Get-RunArgs $rowWith) '--native m.gguf --spec 6 --mtp D:\data\mtp\rt --batch 2 --batch-mtp --kv int8' 'depth 6 replaces --spec 4'
+    $ui = New-Ui 'on'
+    Assert-Is (Get-RunArgs $rowWith) '--native m.gguf --spec 4 --mtp D:\data\mtp\rt --batch 2 --batch-mtp --kv int8' 'on with --mtp already there: unchanged'
+    Assert-Is (Get-RunArgs $rowWithout) "--native m.gguf --kv int8 --mtp $(Join-Path $TempDir 'data\mtp\rt') --spec 4" 'on for a config without it: the shared draft layer and setup''s depth'
+    $ui = New-Ui 'on' '2'
+    Assert-Is (Get-RunArgs $rowWithout) "--native m.gguf --kv int8 --mtp $(Join-Path $TempDir 'data\mtp\rt') --spec 2" 'on with depth 2'
+    $ui = New-Ui 'on'; $ui.DataBox.Text = Join-Path $TempDir 'empty'
+    $msg = try { [void](Get-EffectiveConfig $rowWithout); 'no error' } catch { $_.Exception.Message }
+    Assert-Is ($msg -like 'MTP on: no draft layer in*') $true 'on without a downloaded draft layer says so'
+} finally { Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue }
+
 # ------------------------------------------------- Ensure-ClineStrataAuth rewrites a stale window
 # Run the real function against a throwaway copy of Cline's settings, so a model registered with
 # too big a context is seen being repaired rather than kept because the entry already existed.

@@ -211,7 +211,9 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
             <GridViewColumn Header="Context" Width="80" DisplayMemberBinding="{Binding Context}"/>
             <GridViewColumn Header="KV" Width="50" DisplayMemberBinding="{Binding Kv}"/>
             <GridViewColumn Header="Port" Width="50" DisplayMemberBinding="{Binding Port}"/>
-            <GridViewColumn Header="Server" Width="210" DisplayMemberBinding="{Binding Status}"/>
+            <GridViewColumn Width="230" DisplayMemberBinding="{Binding Status}">
+              <GridViewColumn.Header><TextBlock Text="Server" ToolTip="The server's state. While a model runs: its context, and the share of drafted tokens it accepted since it started (speculative decoding with the MTP draft layer and prompt lookup; higher is faster)."/></GridViewColumn.Header>
+            </GridViewColumn>
           </GridView>
         </ListView.View>
       </ListView>
@@ -244,6 +246,21 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
               <TextBlock Grid.Column="0" Text="VRAM reserve MiB" Style="{StaticResource Label}"/>
               <TextBox Grid.Column="1" x:Name="VramBox" ToolTip="--vram-reserve-mib: GPU memory the engine leaves free. Empty: the config's. The engine log says when it wants more."/>
               <CheckBox Grid.Column="3" x:Name="FitChk" Content="Shorten an answer that would not fit instead of refusing the request (fit_max_tokens)"/>
+            </Grid>
+            <Grid Margin="0,0,0,6">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="200"/>
+                <ColumnDefinition Width="24"/>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="90"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="MTP drafting" Style="{StaticResource Label}"/>
+              <ComboBox Grid.Column="1" x:Name="MtpBox" ToolTip="Speculative decoding with the model's MTP draft layer: it guesses tokens ahead and one pass checks them, so answers are the same, only faster. Off: drafts come from prompt lookup only, and the layer's ~0.7-1 GiB of VRAM goes to the expert cache. Benchmark both to compare."/>
+              <TextBlock Grid.Column="3" Text="Draft depth" Style="{StaticResource Label}"/>
+              <ComboBox Grid.Column="4" x:Name="SpecBox" ToolTip="--spec: tokens the draft layer proposes per check (setup writes 4). Deeper pays off when most drafts are accepted (see the Server column)."/>
+              <TextBlock Grid.Column="5" Text="  The Server column shows the share of drafted tokens accepted while a model runs." Style="{StaticResource Hint}" VerticalAlignment="Center"/>
             </Grid>
             <TextBlock x:Name="CtxHint" Style="{StaticResource Hint}" Margin="0,2,0,0"/>
             <WrapPanel Margin="0,6,0,10">
@@ -370,9 +387,15 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
             <ListView Grid.Row="1" x:Name="ResultList" SelectionMode="Extended">
               <ListView.View>
                 <GridView>
-                  <GridViewColumn Header="Results folder" Width="330" DisplayMemberBinding="{Binding Name}"/>
-                  <GridViewColumn Header="Model" Width="190" DisplayMemberBinding="{Binding Model}"/>
-                  <GridViewColumn Header="Context" Width="75" DisplayMemberBinding="{Binding Context}"/>
+                  <GridViewColumn Header="Results folder" Width="290" DisplayMemberBinding="{Binding Name}"/>
+                  <GridViewColumn Header="Model" Width="170" DisplayMemberBinding="{Binding Model}"/>
+                  <GridViewColumn Header="Context" Width="65" DisplayMemberBinding="{Binding Context}"/>
+                  <GridViewColumn Width="75" DisplayMemberBinding="{Binding Mtp}">
+                    <GridViewColumn.Header><TextBlock Text="MTP" ToolTip="The run's speculative decoding, from the engine arguments it ran with: spec N (the MTP draft layer, N tokens per check), lookup N (no draft layer, prompt lookup only) or off."/></GridViewColumn.Header>
+                  </GridViewColumn>
+                  <GridViewColumn Width="70" DisplayMemberBinding="{Binding Drafts}">
+                    <GridViewColumn.Header><TextBlock Text="Drafts %" ToolTip="Drafted tokens accepted, over all of the run's chat requests."/></GridViewColumn.Header>
+                  </GridViewColumn>
                   <GridViewColumn Header="Decode tok/s" Width="90" DisplayMemberBinding="{Binding Decode}"/>
                   <GridViewColumn Header="4K pp tok/s" Width="85" DisplayMemberBinding="{Binding P4}"/>
                   <GridViewColumn Header="16K pp tok/s" Width="85" DisplayMemberBinding="{Binding P16}"/>
@@ -585,8 +608,12 @@ $script:http = New-Object System.Net.Http.HttpClient
 $script:http.Timeout = [TimeSpan]::FromSeconds(3)
 $script:health = @{}        # port -> health object
 $script:healthTasks = @{}   # port -> pending Task[string]
+$script:draftTasks = @{}    # port -> pending /metrics/prometheus read, for the MTP acceptance
+$script:drafts = @{}        # port -> @{ Offered; Accepted } since the server started
+$script:draftAt = @{}       # port -> when it was last asked
 $script:started = @{}       # port -> the cmd.exe process this GUI started
 $script:startedRow = @{}    # port -> the config path that process serves
+$script:startedCfg = @{}    # port -> the config file it was started with (a %TEMP% copy when overridden)
 $script:clinePending = $null
 $script:job = $null
 
@@ -831,9 +858,10 @@ function Set-ArgValue($List, [string]$Name, [string]$Value) {
     if ($i -ge 0 -and $i + 1 -lt $List.Count) { $List[$i + 1] = $Value } else { $List.Add($Name); $List.Add($Value) }
 }
 
-function Remove-Arg($List, [string]$Name) {
+function Remove-Arg($List, [string]$Name, [switch]$Switch) {
+    # the flag and its value; -Switch: a flag that takes none
     $i = $List.IndexOf($Name)
-    if ($i -ge 0) { $List.RemoveRange($i, [Math]::Min(2, $List.Count - $i)) }
+    if ($i -ge 0) { $List.RemoveRange($i, $(if ($Switch) { 1 } else { [Math]::Min(2, $List.Count - $i) })) }
 }
 
 function Set-ContextArgs($List, [int64]$Ctx) {
@@ -859,12 +887,27 @@ function Get-EffectiveConfig($Row) {
     $vram = $ui.VramBox.Text.Trim()
     if ($vram -and $vram -notmatch '^\d+$') { throw "VRAM reserve must be a number of MiB: $vram" }
     $fit = [bool]$ui.FitChk.IsChecked
-    if (-not $ctx -and -not $extra -and -not $vram -and -not $fit) { return $Row.Path }
+    $mtp = [string]$ui.MtpBox.SelectedItem
+    $spec = [string]$ui.SpecBox.SelectedItem
+    if ($mtp -notmatch '^(on|off)') { $mtp = '' }
+    if ($spec -notmatch '^\d+$') { $spec = '' }
+    if (-not $ctx -and -not $extra -and -not $vram -and -not $fit -and -not $mtp -and -not $spec) { return $Row.Path }
     $cfg = Get-Content -LiteralPath $Row.Path -Raw | ConvertFrom-Json
     $list = New-Object System.Collections.Generic.List[string]
     foreach ($a in $cfg.args) { $list.Add([string]$a) }
     if ($ctx) { Set-ContextArgs $list $ctx }
     if ($vram) { Set-ArgValue $list '--vram-reserve-mib' $vram }
+    if ($mtp -like 'off*') {
+        # no draft layer: --batch-mtp needs it; --spec stays for the prompt-lookup drafts
+        Remove-Arg $list '--mtp'
+        Remove-Arg $list '--batch-mtp' -Switch
+    } elseif ($mtp -like 'on*' -and $list -notcontains '--mtp') {
+        $dir = Join-Path (Clean-Path $ui.DataBox.Text) 'mtp\rt'
+        if (-not (Test-Path -LiteralPath (Join-Path $dir 'experts.bin'))) { throw "MTP on: no draft layer in $dir. Strata's setup downloads it with a model." }
+        Set-ArgValue $list '--mtp' $dir
+        if ($list -notcontains '--spec') { Set-ArgValue $list '--spec' '4' }
+    }
+    if ($spec) { Set-ArgValue $list '--spec' $spec }
     if ($extra) { foreach ($a in (Split-Args $extra)) { $list.Add($a) } }
     if ($fit) { $cfg | Add-Member -NotePropertyName fit_max_tokens -NotePropertyValue $true -Force }
     $cfg.args = $list.ToArray()
@@ -975,6 +1018,7 @@ function Start-Server($Row, [switch]$Quiet) {
         -WorkingDirectory (Get-Root) -WindowStyle $style -PassThru
     $script:started[$Row.Port] = $proc
     $script:startedRow[$Row.Port] = $Row.Path
+    $script:startedCfg[$Row.Port] = $cfgPath   # with its overrides: what a benchmark of it records
     $script:health[$Row.Port] = [pscustomobject]@{ Up = $false; Loaded = $false; Model = ''; Context = 0; Starting = (Get-Date) }
     Set-Status "Starting $($Row.Model) on port $($Row.Port)$(if ($cfgPath -ne $Row.Path) { ' with overrides' })..."
     return $true
@@ -1008,14 +1052,35 @@ function Update-Health {
             $script:healthTasks[$port] = $script:http.GetStringAsync("http://127.0.0.1:$port/health")
         }
     }
+    # The share of drafted tokens the model accepted (MTP and prompt lookup), from the server's own counters, every
+    # 5 s while a model is loaded: the small Prometheus page, not /metrics with its request history.
+    foreach ($port in @($script:configs | Select-Object -ExpandProperty Port -Unique)) {
+        $h = $script:health[$port]
+        if (-not ($h -and $h.Loaded)) { $script:drafts.Remove($port); continue }
+        $task = $script:draftTasks[$port]
+        if ($task) {
+            if (-not $task.IsCompleted) { continue }
+            if ($task.Status -eq 'RanToCompletion') {
+                $o = [regex]::Match($task.Result, '(?m)^strata:drafts_offered_total\s+(\d+)')
+                $a = [regex]::Match($task.Result, '(?m)^strata:drafts_accepted_total\s+(\d+)')
+                if ($o.Success -and $a.Success) { $script:drafts[$port] = @{ Offered = [int64]$o.Groups[1].Value; Accepted = [int64]$a.Groups[1].Value } }
+            }
+            $script:draftTasks.Remove($port)
+        } elseif (-not $script:draftAt[$port] -or ((Get-Date) - $script:draftAt[$port]).TotalSeconds -ge 5) {
+            $script:draftAt[$port] = Get-Date
+            $script:draftTasks[$port] = $script:http.GetStringAsync("http://127.0.0.1:$port/metrics/prometheus")
+        }
+    }
     $changed = $false
     foreach ($row in $script:configs) {
         $h = $script:health[$row.Port]
         $mine = Test-StartedHere $row
         $loading = $script:loadTasks[$row.Port] -and -not $script:loadTasks[$row.Port].IsCompleted
+        $d = $script:drafts[$row.Port]
+        $taken = if ($d -and $d.Offered -gt 0) { ', drafts {0:p0}' -f ($d.Accepted / $d.Offered) } else { '' }
         $status = if (-not $h) { '...' }
             elseif ($h.Up -and $h.Model -and $h.Model -ne $row.Model) { 'stopped (port in use)' }
-            elseif ($h.Loaded) { "ready  ($(Format-Tokens $h.Context) ctx)" }
+            elseif ($h.Loaded) { "ready  ($(Format-Tokens $h.Context) ctx$taken)" }
             elseif ($h.Up -and $loading) { 'loading model...' }
             elseif ($h.Up -and -not $mine) { 'on demand (unloaded)' }
             elseif ($h.Up -and ($mine -or -not $script:startedRow[$row.Port])) { 'loading model...' }
@@ -1243,7 +1308,11 @@ function Start-BenchProcess($Row) {
     $out = Join-Path $TempDir "bench-$PID.out.txt"
     $err = Join-Path $TempDir "bench-$PID.err.txt"
     if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
-    $cfgPath = if ($job.WeStarted) { Get-EffectiveConfig $Row } else { $Row.Path }
+    # the config the server runs with: this run's overrides when the benchmark started it, the ones it was started
+    # with from here, or the config as it is
+    $cfgPath = if ($job.WeStarted) { Get-EffectiveConfig $Row }
+        elseif ((Test-StartedHere $Row) -and $script:startedCfg[$Row.Port]) { $script:startedCfg[$Row.Port] }
+        else { $Row.Path }
     $bargs = "-u $(QPath (Join-Path $root 'tools\strata_bench.py')) --url $(Get-BaseUrl $Row) --config $(QPath $cfgPath) --runs $($ui.RunsBox.SelectedItem)"
     if ([int]$ui.ClientsBox.SelectedItem -gt 0) { $bargs += " --clients $($ui.ClientsBox.SelectedItem)" }
     if ($ui.LongChk.IsChecked) { $bargs += ' --long' }
@@ -1290,12 +1359,21 @@ function Read-Results {
             }
             $bench = ($j -and $j.schema -and $j.results -and $j.results.PSObject.Properties['chat'])
             if (-not $bench -and $ui.OnlyBenchChk.IsChecked) { continue }
-            $row = [pscustomobject]@{ Name = $d.Name; Path = $d.FullName; Model = '-'; Context = '-'; Decode = '-'; P4 = '-'; P16 = '-'; Hit = '-'; Json = $null }
+            $row = [pscustomobject]@{ Name = $d.Name; Path = $d.FullName; Model = '-'; Context = '-'; Mtp = '-'; Drafts = '-'; Decode = '-'; P4 = '-'; P16 = '-'; Hit = '-'; Json = $null }
             if ($bench) {
                 $r = $j.results
                 $row.Json = $j
                 $row.Model = (@($j.machine.model, $j.machine.quant) | Where-Object { $_ }) -join ' '
                 $row.Context = Format-Tokens $j.machine.context
+                # the engine arguments the run had (strata_bench records the config it was given)
+                $runArgs = @($j.machine.config.args | ForEach-Object { [string]$_ })
+                if ($runArgs.Count) {
+                    $depth = Get-ArgValue $runArgs '--spec'
+                    $row.Mtp = if ($runArgs -contains '--mtp') { "spec $(if ($depth) { $depth } else { '?' })" } elseif ($depth) { "lookup $depth" } else { 'off' }
+                }
+                $reqs = @($r.chat.requests | Where-Object { $_.ok -and $null -ne $_.drafts_offered })
+                $offered = ($reqs | Measure-Object drafts_offered -Sum).Sum
+                if ($offered -gt 0) { $row.Drafts = '{0:n0}' -f (100 * ($reqs | Measure-Object drafts_accepted -Sum).Sum / $offered) }
                 $row.Decode = Get-Median $r.chat.decode_tps
                 if ($r.prompts) {
                     $row.P4 = Get-Median $r.prompts.'4K'.prompt_tps '{0:n0}'
@@ -2456,6 +2534,13 @@ $EngineFlags = @(
     @{ Flag = '--prefill'; Kind = 'auto'; Choices = @('auto', 'auto:16384', 'auto:32768'); Help = 'Prompt reading in chunks of this many tokens: auto (the largest up to 8192 that fits), auto:16384 / auto:32768 to allow bigger, or a number.' }
     @{ Flag = '--spec'; Kind = 'int'; Min = 1; Max = 8; Help = 'Speculative decoding: tokens the draft layer proposes per check (setup writes 4).' }
     @{ Flag = '--spec-min-p'; Kind = 'num'; Min = 0; Max = 1; Help = 'How sure the draft layer must be to extend a window (setup writes 0.5).' }
+    @{ Flag = '--suffix-draft'; Kind = 'int'; Min = 0; Max = 16; Help = 'Prompt lookup: also draft from an earlier repeat of the last N+ tokens of context, which pays off on code edits and quoted text (engine default 3; 0 = MTP drafts only).' }
+    @{ Flag = '--lookup-chain'; Kind = 'int'; Min = 0; Max = 8; Help = 'Opt-in: after the MTP drafts, add up to K prompt-lookup drafts that continue them (the window grows to at most 8; default 0 = off).' }
+    @{ Flag = '--lookup-chain-min'; Kind = 'int'; Min = 1; Help = 'The shortest context match --lookup-chain extends on (default 3).' }
+    @{ Flag = '--mtp-max-t'; Kind = 'int'; Min = 0; Max = 8; Help = 'Cap the MTP draft windows at M tokens (0 = --spec); longer windows then come from prompt lookup only.' }
+    @{ Flag = '--mtp-window'; Kind = 'int'; Min = 0; Help = 'Cells of context the draft layer attends to (default 32768). Smaller saves VRAM; Strata measured that it costs acceptance on faster cards.' }
+    @{ Flag = '--mtp-hnorm'; Kind = 'enum'; Choices = @('pooled', 'stream'); Help = 'The draft layer''s input norm: pooled (default, one over all four streams) or stream (one per stream, as llama.cpp does; Strata measured +4% decode on a DGX Spark).' }
+    @{ Flag = '--mtp-q4'; Kind = 'enum'; Choices = @('all', 'proj', 'head'); Help = 'Opt-in: the draft layer''s projections and/or head as 4-bit copies, for less VRAM. Every draft is still checked, so answers do not change (+3.5% decode on a DGX Spark, neutral on a Radeon 780M).' }
     @{ Flag = '--batch'; Kind = 'int'; Min = 2; Max = 8; Help = 'Serve up to N requests at once (each slot takes VRAM like the main session). Empty: one at a time.' }
     @{ Flag = '--batch-mtp'; Kind = 'switch'; Help = 'With --batch: each slot also verifies a draft (needs --spec and --mtp).' }
     @{ Flag = '--prompt-cache'; Kind = 'int'; Min = 0; Help = 'Conversation checkpoints kept between requests (default 6, ~118 MB of RAM each; 0 = re-read every prompt).' }
@@ -2470,6 +2555,7 @@ $FileFlags = @(
     @{ Flag = '--ple-gguf'; Help = 'The shard with the n-gram (PLE) table. Without it the model silently computes something else.' }
     @{ Flag = '--embd-gguf'; Help = 'The token embedding GGUF (NVFP4 packs).' }
     @{ Flag = '--mtp'; Dir = $true; Help = 'The draft layer folder for speculative decoding.' }
+    @{ Flag = '--mtp-draft-vocab'; Help = 'The draft head''s token subset (default: draft_vocab.bin in the --mtp folder). Strata''s tools\draft_vocab.py builds others; English and code only saves ~110 MiB of VRAM.' }
     @{ Flag = '--expert-profile'; Help = 'Which experts start in VRAM (setup''s profile).' }
 )
 $TopFiles = @(
@@ -3143,6 +3229,9 @@ $ui.ClineScriptBox.Text = $settings.ClineScript
 $ui.ExtraBox.Text = $settings.ExtraArgs
 $ui.VramBox.Text = $settings.VramReserve
 $ui.FitChk.IsChecked = [bool]$settings.FitMaxTokens
+# MTP overrides start at the config's own settings every time: a forgotten "off" would quietly slow every run
+$ui.MtpBox.ItemsSource = @('(config)', 'on', 'off (prompt lookup only)'); $ui.MtpBox.SelectedIndex = 0
+$ui.SpecBox.ItemsSource = @('(config)') + @(1..8 | ForEach-Object { [string]$_ }); $ui.SpecBox.SelectedIndex = 0
 foreach ($v in @('5', '10', '15', '20')) { [void]$ui.ReserveBox.Items.Add($v) }
 $ui.ReserveBox.SelectedItem = $(if (@('5', '10', '15', '20') -contains [string]$settings.ReservePercent) { [string]$settings.ReservePercent } else { '10' })
 $ClineReservePercent = [int]$ui.ReserveBox.SelectedItem

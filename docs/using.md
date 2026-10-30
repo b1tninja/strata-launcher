@@ -9,13 +9,31 @@ catalog entry's figure. Select one to launch it, or several to benchmark them in
 
 | Tab | |
 | --- | --- |
-| **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve and more; your config files are never changed. **Remove model...** deletes a model's files and config ([details](setup.md#removing-models)). **Sessions** and **Open Cline** are here too (below). |
+| **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve, [MTP drafting and its depth](#mtp-speculative-decoding) and more; your config files are never changed. **Remove model...** deletes a model's files and config ([details](setup.md#removing-models)). **Sessions** and **Open Cline** are here too (below). |
 | **Benchmark** | Runs Strata's `strata_bench.py` against one or several models in turn, starting and stopping their servers, with live output. |
-| **Results** | Every benchmark run as a table (decode and prompt speed, time to first token, cache hits); compare two side by side. |
+| **Results** | Every benchmark run as a table (its MTP setting and draft acceptance, decode and prompt speed, time to first token, cache hits); compare two side by side. |
 | **Models** | Strata's model catalog with download size, disk and RAM needs against this PC, colour-coded by fit. **Install with setup...** downloads one; **Remove...** deletes an installed one ([details](setup.md#removing-models)). |
 | **Service** | Runs one model on demand in the background: the server starts without loading the model, the first request loads it, and it unloads after an idle time so the graphics card is free. Optionally saves the conversation before unloading. |
 | **Config** | A full editor for a model's `strata-*.json`: server settings (from Strata's own settings schema), engine options with explanations, model files, other engine arguments, and the raw JSON. Changes are listed and checked before saving, and the previous file is kept as `.bak`. **Save as new** makes a variant. |
 | **Setup** | Everything a new PC needs, and the place to update Strata. See [Setting up a PC](setup.md). |
+
+## MTP speculative decoding
+
+Strata's models have an MTP (multi-token prediction) draft layer: it guesses the next few tokens, and
+one pass of the full model checks them all. The answer is the same as without it, only faster, and
+faster still the more of the guesses are right. Strata's setup turns it on (`--mtp`, `--spec 4`), and
+it also drafts from earlier repeats in the context (prompt lookup), which pays off on code edits.
+
+- **While a model runs**, the Server column shows the share of drafted tokens it accepted since it
+  started, from the server's own counters (`ready (512K ctx, drafts 78%)`).
+- **To compare**, set the Launch tab's **MTP drafting** (on, or off: prompt lookup only, which frees
+  the draft layer's ~0.7-1 GiB of VRAM for the expert cache) and **Draft depth** (`--spec`, 1-8), then
+  benchmark. A benchmark uses the same overrides, and **Results** shows each run's setting (`spec 4`,
+  `lookup 4`) and its acceptance next to its speed. Both boxes start at the config's own setting each
+  time Strata Launcher opens.
+- The **Config** tab has the finer settings, each with what Strata measured: `--spec-min-p`,
+  `--suffix-draft`, `--lookup-chain`, `--mtp-max-t`, `--mtp-window`, `--mtp-hnorm`, `--mtp-q4` and
+  `--mtp-draft-vocab`.
 
 ## Cline
 
