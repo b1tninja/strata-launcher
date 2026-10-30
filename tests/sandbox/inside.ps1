@@ -209,6 +209,9 @@ if (-not $SkipPcCheck) {
         [IO.File]::WriteAllText("C:\Strata\strata-$($t[0]).json", (@{ exe = 'x'; model_name = $t[0]; args = @('--native', $t[1], '--mtp-gguf', "$md\shared.gguf") } | ConvertTo-Json))
     }
     Press (All $win | Where-Object { $_.Current.ControlType -eq $CT::Button -and $_.Current.Name -eq 'Refresh' } | Select-Object -First 1)
+    # the button is on the Launch tab, and WPF builds only the open tab's controls
+    $launch = All $win | Where-Object { $_.Current.ControlType -eq $CT::TabItem -and $_.Current.Name.Trim() -eq 'Launch' } | Select-Object -First 1
+    $launch.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
     Start-Sleep 3
     $list = ById $win 'ConfigList'
     $row = All $list | Where-Object { (All $_ | ForEach-Object { $_.Current.Name }) -contains 'test-a' } | Select-Object -First 1
