@@ -200,5 +200,53 @@ try {
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# ---------------------------------------------------------------- PC tab: RAM, PCIe links, drives
+Invoke-Expression (Get-FunctionText $gui @('Get-RamRating', 'Get-PcWarnings', 'Get-PcSummary', 'Get-PcShort', 'Read-BenchPc'))
+Write-Host '--- PC facts and warnings'
+Assert-Is (Get-RamRating 'F5-6000J2836F48G') 6000 'G.Skill part number rating'
+Assert-Is (Get-RamRating 'CMK64GX5M2B6000C30') 6000 'Corsair part number rating'
+Assert-Is (Get-RamRating 'M323R4GA3DB0-CWM') 0 'no speed in the part number'
+function New-Stick($Gb, $Run, $Jedec = 5600, $Part = 'F5-6000J2836F48G') { [pscustomobject]@{ Slot = 'A'; GB = $Gb; Part = $Part; Jedec = $Jedec; Running = $Run } }
+function New-Drive($Name, $Loc, $Gen, $Width, $Letters, $Models, $Free = 500) {
+    [pscustomobject]@{ Name = $Name; Gen = $Gen; Width = $Width; MaxGen = 5; MaxWidth = 4; Location = $Loc; Letters = $Letters; Models = $Models
+        Free = @($Letters | ForEach-Object { [pscustomobject]@{ Letter = $_; FreeGB = $Free; Models = $Models } }) }
+}
+$gpu16 = [pscustomobject]@{ Name = 'RTX 5090'; Gen = 5; Width = 16; MaxGen = 5; MaxWidth = 16; Location = 'PCIROOT(0)#PCI(0101)#PCI(0000)' }
+$gpu8 = [pscustomobject]@{ Name = 'RTX 5090'; Gen = 5; Width = 8; MaxGen = 5; MaxWidth = 16; Location = 'PCIROOT(0)#PCI(0101)#PCI(0000)' }
+$fast = New-Drive '9100 PRO' 'PCIROOT(0)#PCI(0201)#PCI(0000)' 5 4 @('D') $true
+$good = [pscustomobject]@{ Sticks = @((New-Stick 48 6000), (New-Stick 48 6000)); Gpus = @($gpu16); Drives = @($fast) }
+Assert-Is @(Get-PcWarnings $good).Count 0 'a PC at its rated RAM speed and full link: no warnings'
+Assert-Is (Get-PcShort $good) '2x48@6000, 5.0 x16' 'short form for the Results column'
+Assert-Is (Get-PcSummary $good) 'RAM 2x48 GB @ 6000, GPU PCIe 5.0 x16, models on 9100 PRO (5.0 x4)' 'summary line'
+# the day this was written: EXPO off (3600), four 48 GB sticks, the GPU at x8 with a drive in the shared M.2 slot
+$shared = New-Drive '990 EVO Plus' 'PCIROOT(0)#PCI(0103)#PCI(0000)' 5 2 @('M') $false
+$bad = [pscustomobject]@{ Sticks = @(1..4 | ForEach-Object { New-Stick 48 3600 }); Gpus = @($gpu8); Drives = @($fast, $shared) }
+$w = @(Get-PcWarnings $bad)
+Assert-Is ($w[0] -match 'EXPO' -and $w[0] -match 'four sticks') $true 'EXPO off is named, with the four-stick caution'
+Assert-Is (@($w | Where-Object { $_ -match 'x8 of x16' -and $_ -match '990 EVO Plus \(M:\) is connected to the same CPU lanes' }).Count) 1 'x8 names the drive on the GPU''s lanes'
+Assert-Is (Get-PcShort $bad) '4x48@3600, 5.0 x8/16' 'short form shows x8 of 16'
+$fast4 = [pscustomobject]@{ Sticks = @(1..4 | ForEach-Object { New-Stick 48 6000 }); Gpus = @($gpu16); Drives = @($fast) }
+Assert-Is (@(Get-PcWarnings $fast4) -match 'Four 48 GB sticks at 6000').Count 1 'four big sticks at 6000: test it'
+$one = [pscustomobject]@{ Sticks = @(New-Stick 32 5600 5600 'X'); Gpus = @(); Drives = @() }
+Assert-Is (@(Get-PcWarnings $one) -match 'single memory channel').Count 1 'one stick: one channel'
+$slowJedec = [pscustomobject]@{ Sticks = @((New-Stick 16 4000 4800 'X'), (New-Stick 16 4000 4800 'X')); Gpus = @(); Drives = @() }
+Assert-Is (@(Get-PcWarnings $slowJedec) -match 'below its standard 4800').Count 1 'below JEDEC with no rated part number'
+$gen4 = [pscustomobject]@{ Sticks = @(); Gpus = @([pscustomobject]@{ Name = 'RTX 5090'; Gen = 4; Width = 16; MaxGen = 5; MaxWidth = 16; Location = '' }); Drives = @() }
+Assert-Is (@(Get-PcWarnings $gen4) -match 'PCIe 4\.0, below its 5\.0').Count 1 'Gen4 in a Gen5 card'
+$slowModels = [pscustomobject]@{ Sticks = @(); Gpus = @(); Drives = @((New-Drive 'old SSD' 'x' 3 4 @('E') $true 12)) }
+$w = @(Get-PcWarnings $slowModels)
+Assert-Is (@($w -match 'about 4 GB/s').Count) 1 'models on a PCIe 3.0 x4 drive'
+Assert-Is (@($w -match 'E: has 12 GB free').Count) 1 'little room where the models are'
+$otherFull = [pscustomobject]@{ Sticks = @(); Gpus = @(); Drives = @((New-Drive 'sys' 'x' 5 4 @('C') $false 5), $fast) }
+Assert-Is @(Get-PcWarnings $otherFull).Count 0 'a full drive without models is not flagged'
+# Results: a folder the launcher benchmarked has launcher-pc.json; an older one falls back to strata_bench's own record
+$tmp = Join-Path $env:TEMP "pc-test-$PID"; New-Item -ItemType Directory -Force $tmp | Out-Null
+try {
+    $old = [pscustomobject]@{ machine = [pscustomobject]@{ ram_gib = 189.6; gpu_detail = @([pscustomobject]@{ pcie = 'gen4 x8' }) } }
+    Assert-Is (Read-BenchPc $tmp $old).Short '190 GiB, gen4 x8 (idle)' 'older run: strata_bench''s RAM size and idle link'
+    '{"short":"2x48@6000, 5.0 x8/16","summary":"RAM 2x48 GB @ 6000"}' | Set-Content -LiteralPath (Join-Path $tmp 'launcher-pc.json') -Encoding ASCII
+    Assert-Is (Read-BenchPc $tmp $old).Short '2x48@6000, 5.0 x8/16' 'launcher-pc.json wins'
+} finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+
 if ($fails) { "`n$fails FAILED"; exit 1 }
 "`nall good"

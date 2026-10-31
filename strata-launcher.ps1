@@ -401,6 +401,9 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
                   <GridViewColumn Header="4K pp tok/s" Width="85" DisplayMemberBinding="{Binding P4}"/>
                   <GridViewColumn Header="16K pp tok/s" Width="85" DisplayMemberBinding="{Binding P16}"/>
                   <GridViewColumn Header="Agent hit %" Width="80" DisplayMemberBinding="{Binding Hit}"/>
+                  <GridViewColumn Width="150" DisplayMemberBinding="{Binding Pc}">
+                    <GridViewColumn.Header><TextBlock Text="PC" ToolTip="The hardware the run had: RAM sticks and speed, the GPU's PCIe link (x8/16 = 8 of its 16 lanes). Runs from before Strata Launcher recorded this show what strata_bench read itself: the RAM size and the link near idle."/></GridViewColumn.Header>
+                  </GridViewColumn>
                 </GridView>
               </ListView.View>
             </ListView>
@@ -585,6 +588,21 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
             </ScrollViewer>
           </DockPanel>
         </TabItem>
+
+        <TabItem Header="  PC  " x:Name="PcTab">
+          <DockPanel Margin="12">
+            <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#FF444444" Margin="0,0,0,10"
+                       Text="What sets Strata's speed on this PC. Generating text reads the experts the GPU does not hold from RAM, so the RAM's speed counts; reading a prompt streams model weights to the GPU over PCIe, so its link counts; experts that do not fit in RAM are read from the drive the models are on. Each benchmark records these facts, and the Results tab shows them."/>
+            <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+              <Button x:Name="PcRefreshBtn" DockPanel.Dock="Right" Content="Check again" Margin="8,0,0,0"/>
+              <TextBlock TextWrapping="Wrap" Foreground="#FF666666" VerticalAlignment="Center"
+                         Text="Read from Windows without admin rights. Some graphics cards slow their PCIe link while idle: check again with a model loaded."/>
+            </DockPanel>
+            <TextBlock DockPanel.Dock="Top" x:Name="PcWarnings" TextWrapping="Wrap" Margin="0,0,0,10"/>
+            <TextBox x:Name="PcFacts" Height="Auto" VerticalContentAlignment="Top" FontFamily="Consolas" FontSize="12"
+                     IsReadOnly="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+          </DockPanel>
+        </TabItem>
       </TabControl>
     </Grid>
   </DockPanel>
@@ -617,6 +635,7 @@ $script:startedRow = @{}    # port -> the config path that process serves
 $script:startedCfg = @{}    # port -> the config file it was started with (a %TEMP% copy when overridden)
 $script:clinePending = $null
 $script:job = $null
+$script:pcFacts = $null      # the PC tab's last reading (Get-PcFacts)
 
 # ------------------------------------------------------------------------------------ helpers
 function Set-Status([string]$Text) { $ui.StatusText.Text = $Text }
@@ -1293,6 +1312,7 @@ function Invoke-BenchStep {
             $dir = Get-ChildItem -LiteralPath (Join-Path (Get-Root) 'bench\results') -Directory -ErrorAction SilentlyContinue |
                 Where-Object { $_.CreationTime -ge $job.BenchStart } | Sort-Object CreationTime -Descending | Select-Object -First 1
             Write-BenchLine "--- $($job.Row.Model): finished (exit code $code)$(if ($dir) { ", results in $($dir.Name)" })"
+            if ($dir -and $job.Pc) { Save-BenchPc $dir.FullName $job.Pc }
             $job.Done += [pscustomobject]@{ Model = $job.Row.Model; Dir = $(if ($dir) { $dir.FullName }) }
             if ($ui.StopAfterChk.IsChecked -or ($job.Many -and $job.Queue.Count -gt 0)) {
                 Write-BenchLine "    stopping the server on port $($job.Row.Port)."
@@ -1322,6 +1342,9 @@ function Start-BenchProcess($Row) {
     if ($cmp -and $cmp -ne '(none)') { $bargs += " --compare $(QPath (Join-Path $root "bench\results\$cmp"))" }
     $env:PYTHONUNBUFFERED = '1'
     $env:PYTHONIOENCODING = 'utf-8'
+    # the PC as it runs this model (loaded, so the GPU's link is at its working speed); saved with the results
+    $job.Pc = try { Get-PcFacts (Get-ModelDrives) } catch { $null }
+    if ($job.Pc) { Write-BenchLine "    PC: $(Get-PcSummary $job.Pc)" }
     Write-BenchLine "    python $bargs"
     $job.BenchStart = (Get-Date).AddSeconds(-2)
     $job.T0 = Get-Date
@@ -1360,10 +1383,12 @@ function Read-Results {
             }
             $bench = ($j -and $j.schema -and $j.results -and $j.results.PSObject.Properties['chat'])
             if (-not $bench -and $ui.OnlyBenchChk.IsChecked) { continue }
-            $row = [pscustomobject]@{ Name = $d.Name; Path = $d.FullName; Model = '-'; Context = '-'; Mtp = '-'; Drafts = '-'; Decode = '-'; P4 = '-'; P16 = '-'; Hit = '-'; Json = $null }
+            $row = [pscustomobject]@{ Name = $d.Name; Path = $d.FullName; Model = '-'; Context = '-'; Mtp = '-'; Drafts = '-'; Decode = '-'; P4 = '-'; P16 = '-'; Hit = '-'; Pc = '-'; PcText = ''; Json = $null }
             if ($bench) {
                 $r = $j.results
                 $row.Json = $j
+                $pc = Read-BenchPc $d.FullName $j
+                $row.Pc = $pc.Short; $row.PcText = $pc.Summary
                 $row.Model = (@($j.machine.model, $j.machine.quant) | Where-Object { $_ }) -join ' '
                 $row.Context = Format-Tokens $j.machine.context
                 # the engine arguments the run had (strata_bench records the config it was given)
@@ -1401,6 +1426,7 @@ function Show-ResultDetail($Row) {
         $lines += "Date:     $($j.date)    suite took $([int]$j.elapsed_s) s    $($j.params.command)"
         $lines += "GPU:      $((@($m.gpu) -join ' + '))    driver $($m.gpu_driver)    CUDA $($m.cuda)"
         $lines += "CPU/RAM:  $($m.cpu)    $($m.ram_gib) GiB"
+        if ($Row.PcText) { $lines += "PC:       $($Row.PcText)" }
         $lines += "Model:    $($m.model)  $($m.quant)    context $($m.context)    engine $($m.engine_version)"
         $lines += ''
         $lines += '{0,-34} {1,10}   {2}' -f 'metric', 'median', 'range (n)'
@@ -1443,7 +1469,8 @@ function Compare-Results {
     $py = Get-Python
     $tool = Join-Path (Get-Root) 'tools\strata_bench.py'
     $text = & $py $tool --compare $sel[0].Path --compare-only $sel[1].Path 2>&1 | Out-String
-    $ui.ResDetail.Text = "old: $($sel[0].Name)`r`nnew: $($sel[1].Name)`r`n`r`n" + ($text -replace "`r?`n", "`r`n")
+    $note = if ($sel[0].Pc -ne $sel[1].Pc) { "Different PCs: old $($sel[0].Pc), new $($sel[1].Pc). Some of the difference is the hardware, not the model or settings.`r`n`r`n" } else { '' }
+    $ui.ResDetail.Text = "old: $($sel[0].Name)`r`nnew: $($sel[1].Name)`r`n`r`n" + $note + ($text -replace "`r?`n", "`r`n")
 }
 
 # ------------------------------------------------------------------------------------ on-demand service
@@ -3058,6 +3085,185 @@ function Save-ConfigAs {
     Set-Status "Created $(Split-Path $path -Leaf)."
 }
 
+# ------------------------------------------------------------------------------------ PC hardware
+# What limits Strata on this PC: the RAM's speed against its rating (decode reads the experts the GPU does not hold
+# from RAM), the GPU's PCIe link against its maximum (prompts stream weights over it) and the drive the models are
+# on. Read without admin rights: CIM, nvidia-smi and the PnP link properties. Get-PcFacts collects, the rest only reads.
+function Get-PciLink([string]$InstanceId) {
+    $keys = 'DEVPKEY_PciDevice_CurrentLinkSpeed', 'DEVPKEY_PciDevice_CurrentLinkWidth', 'DEVPKEY_PciDevice_MaxLinkSpeed',
+        'DEVPKEY_PciDevice_MaxLinkWidth', 'DEVPKEY_Device_LocationPaths'
+    $p = @{}
+    foreach ($v in @(Get-PnpDeviceProperty -InstanceId $InstanceId -KeyName $keys -ErrorAction SilentlyContinue)) { $p[$v.KeyName] = $v.Data }
+    $num = { param($x) if ($null -ne $x -and "$x" -match '^\d+$') { [int]$x } else { 0 } }
+    [pscustomobject]@{
+        Gen      = & $num $p['DEVPKEY_PciDevice_CurrentLinkSpeed']   # 1..5 = PCIe 1.0..5.0
+        Width    = & $num $p['DEVPKEY_PciDevice_CurrentLinkWidth']
+        MaxGen   = & $num $p['DEVPKEY_PciDevice_MaxLinkSpeed']
+        MaxWidth = & $num $p['DEVPKEY_PciDevice_MaxLinkWidth']
+        Location = [string](@($p['DEVPKEY_Device_LocationPaths']) | Select-Object -First 1)
+    }
+}
+
+function Get-RamRating([string]$Part) {
+    # The speed in a DDR5 part number (F5-6000J2836F48G, CMK64GX5M2B6000C30): what EXPO/XMP runs it at. 0 = none found.
+    if ($Part -match '(?<!\d)(4800|5200|5600|6000|6200|6400|6600|6800|7000|7200|7600|8000|8200|8400)(?!\d)') { return [int]$Matches[1] }
+    return 0
+}
+
+function Get-PcFacts([string[]]$ModelDrives) {
+    $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+    $sticks = @(Get-CimInstance Win32_PhysicalMemory | ForEach-Object {
+        [pscustomobject]@{ Slot = (@($_.BankLabel, $_.DeviceLocator) | Where-Object { $_ }) -join ' '; GB = [math]::Round($_.Capacity / 1GB)
+            Part = ([string]$_.PartNumber).Trim(); Jedec = [int]$_.Speed; Running = [int]$_.ConfiguredClockSpeed } })
+    $gpus = @(Get-PnpDevice -Class Display -PresentOnly -ErrorAction SilentlyContinue |
+        Where-Object { $_.InstanceId -like 'PCI\*' -and $_.FriendlyName -notmatch '\(TM\) Graphics$|Basic Display' } | ForEach-Object {
+            $l = Get-PciLink $_.InstanceId
+            [pscustomobject]@{ Name = $_.FriendlyName; Gen = $l.Gen; Width = $l.Width; MaxGen = $l.MaxGen; MaxWidth = $l.MaxWidth; Location = $l.Location } })
+    # each NVMe controller with its disk (the disk's \\?\ path is its PnP instance id with # for \), volumes and free space
+    $disks = @(Get-Disk -ErrorAction SilentlyContinue)
+    $drives = @(Get-PnpDevice -Class SCSIAdapter -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'PCI\*' } | ForEach-Object {
+        $kids = @((Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName DEVPKEY_Device_Children -ErrorAction SilentlyContinue).Data)
+        $disk = $disks | Where-Object { $p = ($_.Path -replace '^\\\\\?\\', '' -replace '#\{.*$', '' -replace '#', '\'); $kids -contains $p } | Select-Object -First 1
+        if (-not $disk) { return }
+        $l = Get-PciLink $_.InstanceId
+        $letters = @($disk | Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | ForEach-Object { [string]$_.DriveLetter })
+        $free = @($letters | ForEach-Object { [pscustomobject]@{ Letter = $_; FreeGB = (Get-FreeGB "$($_):\"); Models = ($ModelDrives -contains $_) } })
+        [pscustomobject]@{ Name = $disk.FriendlyName; SizeGB = [math]::Round($disk.Size / 1GB); Gen = $l.Gen; Width = $l.Width
+            MaxGen = $l.MaxGen; MaxWidth = $l.MaxWidth; Location = $l.Location; Letters = $letters; Free = $free
+            Models = [bool](@($letters | Where-Object { $ModelDrives -contains $_ }).Count) } })
+    [pscustomobject]@{
+        Cpu = $cpu.Name.Trim(); Cores = [int]$cpu.NumberOfCores; Threads = [int]$cpu.NumberOfLogicalProcessors
+        L3MB = [math]::Round($cpu.L3CacheSize / 1024)
+        RamGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+        Sticks = $sticks; Gpus = $gpus; Drives = $drives
+    }
+}
+
+function Get-PcWarnings($Facts) {
+    # -> what holds Strata back on this PC, most important first; each line says what to do about it.
+    $out = @()
+    $sticks = @($Facts.Sticks)
+    if ($sticks.Count) {
+        $run = ($sticks | Measure-Object Running -Minimum).Minimum
+        $jedec = ($sticks | Measure-Object Jedec -Maximum).Maximum
+        $label = (@($sticks | ForEach-Object { Get-RamRating $_.Part }) | Measure-Object -Maximum).Maximum
+        if ($label -gt 0 -and $run -gt 0 -and $run -lt $label - 200) {
+            $out += "RAM runs at $run MT/s; its part number is rated $label. Turn on EXPO (AMD) or XMP (Intel) in the BIOS: generating text reads the experts from RAM, so its speed is Strata's speed." +
+                $(if ($sticks.Count -ge 4) { ' With four sticks the rated speed may not be stable: test it (memtest86+, TestMem5) and settle for a step lower if it fails.' } else { '' })
+        } elseif ($jedec -gt 0 -and $run -gt 0 -and $run -lt $jedec - 200) {
+            $out += "RAM runs at $run MT/s, below its standard $jedec MT/s: check the memory settings in the BIOS."
+        }
+        if ($sticks.Count -eq 1) { $out += 'One RAM stick: a single memory channel, half the bandwidth of two sticks.' }
+        if ($sticks.Count -ge 4 -and ($sticks | Measure-Object GB -Minimum).Minimum -ge 32 -and $run -ge 5600) {
+            $out += "Four $(($sticks | Measure-Object GB -Minimum).Minimum) GB sticks at $run MT/s: more than most boards and memory controllers hold stably. Test it before trusting it with downloads and model files."
+        }
+    }
+    foreach ($g in @($Facts.Gpus)) {
+        if ($g.MaxWidth -gt 0 -and $g.Width -gt 0 -and $g.Width -lt $g.MaxWidth) {
+            # an NVMe drive on the GPU's root port group takes its lanes (an M.2 slot that shares them)
+            $root = if ($g.Location -match '^(PCIROOT\(\w+\)#PCI\(\w\w)') { $Matches[1] }
+            $near = @($Facts.Drives | Where-Object { $root -and $_.Location -like "$root*" } |
+                ForEach-Object { $_.Name + $(if ($_.Letters) { ' (' + (($_.Letters | ForEach-Object { "$($_):" }) -join ', ') + ')' }) })
+            $out += "$($g.Name) runs at PCIe x$($g.Width) of x$($g.MaxWidth): prompts stream model weights over this link, so they read at about half the speed." +
+                $(if ($near.Count -eq 1) { " $($near[0]) is connected to the same CPU lanes: its M.2 slot takes lanes from the graphics card slot. Moving it to an M.2 slot on the chipset (see the board's manual) gives the card x$($g.MaxWidth)." }
+                  elseif ($near) { " These drives are connected to the same CPU lanes: $($near -join '; '). One of them is in an M.2 slot that takes lanes from the graphics card slot; the board's manual says which. Moving it to an M.2 slot on the chipset gives the card x$($g.MaxWidth)." }
+                  else { ' An M.2 slot or a second x16 slot that shares the graphics card slot''s lanes (see the board''s manual) is the usual cause.' })
+        }
+        if ($g.MaxGen -gt 0 -and $g.Gen -gt 0 -and $g.Gen -lt $g.MaxGen) {
+            $out += "$($g.Name) links at PCIe $($g.Gen).0, below its $($g.MaxGen).0. Some cards slow the link when idle (check again with a model loaded); otherwise set the slot to Auto or Gen$($g.MaxGen) in the BIOS."
+        }
+    }
+    foreach ($d in @($Facts.Drives | Where-Object { $_.Models })) {
+        $gbps = $d.Width * $(switch ($d.Gen) { 3 { 1 } 4 { 2 } 5 { 4 } default { 0.5 } })
+        if ($d.Gen -gt 0 -and $gbps -lt 7) {
+            $out += "The models are on $($d.Name), linked at PCIe $($d.Gen).0 x$($d.Width) (about $gbps GB/s): the experts that do not fit in RAM are read from it while Strata answers."
+        }
+        foreach ($f in @($d.Free | Where-Object { $_.Models -and $null -ne $_.FreeGB -and $_.FreeGB -lt 30 })) {
+            $out += "$($f.Letter): has $($f.FreeGB) GB free, where the models are: too little for another model or Strata's prepared files."
+        }
+    }
+    return $out
+}
+
+function Get-PcSummary($Facts) {
+    # One line for a benchmark's record: RAM, the GPU's link and the models' drive.
+    $parts = @()
+    $sticks = @($Facts.Sticks)
+    if ($sticks.Count) { $parts += "RAM $($sticks.Count)x$(($sticks | Measure-Object GB -Maximum).Maximum) GB @ $(($sticks | Measure-Object Running -Minimum).Minimum)" }
+    foreach ($g in @($Facts.Gpus)) { if ($g.Gen) { $parts += "GPU PCIe $($g.Gen).0 x$($g.Width)$(if ($g.MaxWidth -gt $g.Width) { "/$($g.MaxWidth)" })" } }
+    $m = @($Facts.Drives | Where-Object { $_.Models }) | Select-Object -First 1
+    if ($m) { $parts += "models on $($m.Name) ($($m.Gen).0 x$($m.Width))" }
+    return $parts -join ', '
+}
+
+function Format-PcFacts($Facts) {
+    $l = @()
+    $l += "CPU    $($Facts.Cpu)    $($Facts.Cores) cores / $($Facts.Threads) threads    L3 $($Facts.L3MB) MB"
+    $l += "RAM    $($Facts.RamGB) GB usable"
+    foreach ($s in @($Facts.Sticks)) {
+        $rated = Get-RamRating $s.Part
+        $l += '       {0,-24} {1,3} GB  {2,-22} runs {3} MT/s  (standard {4}{5})' -f $s.Slot, $s.GB, $s.Part, $s.Running, $s.Jedec, $(if ($rated) { ", rated $rated" } else { '' })
+    }
+    foreach ($g in @($Facts.Gpus)) {
+        $l += "GPU    $($g.Name)    PCIe $($g.Gen).0 x$($g.Width)  (max $($g.MaxGen).0 x$($g.MaxWidth))    $($g.Location)"
+    }
+    foreach ($d in @($Facts.Drives)) {
+        $free = (@($d.Free | ForEach-Object { "$($_.Letter): $($_.FreeGB) GB free" })) -join ', '
+        $l += 'NVMe   {0}  {1:n0} GB    PCIe {2}.0 x{3}  (max {4}.0 x{5})    {6}{7}    {8}' -f $d.Name, $d.SizeGB, $d.Gen, $d.Width, $d.MaxGen, $d.MaxWidth,
+            $free, $(if ($d.Models) { '    <- models' } else { '' }), $d.Location
+    }
+    return $l
+}
+
+function Get-ModelDrives {
+    # The drive letters Strata reads models from: every config's file arguments and the model files folder.
+    $paths = @(Clean-Path $ui.DataBox.Text)
+    foreach ($r in $script:configs) {
+        foreach ($k in '--pack', '--native', '--native-dense-gguf', '--ple-gguf', '--embd-gguf') { $paths += Get-ArgValue $r.Cfg.args $k }
+    }
+    @($paths | Where-Object { $_ -match '^[A-Za-z]:' } | ForEach-Object { $_.Substring(0, 1).ToUpper() } | Sort-Object -Unique)
+}
+
+function Get-PcShort($Facts) {
+    # The Results column: RAM sticks and speed, the GPU's PCIe link (2x48@6000, 5.0 x8/16).
+    $sticks = @($Facts.Sticks)
+    $parts = @()
+    if ($sticks.Count) { $parts += "$($sticks.Count)x$(($sticks | Measure-Object GB -Maximum).Maximum)@$(($sticks | Measure-Object Running -Minimum).Minimum)" }
+    $g = @($Facts.Gpus) | Select-Object -First 1
+    if ($g -and $g.Gen) { $parts += "$($g.Gen).0 x$($g.Width)$(if ($g.MaxWidth -gt $g.Width) { "/$($g.MaxWidth)" })" }
+    return $parts -join ', '
+}
+
+function Save-BenchPc([string]$Dir, $Facts) {
+    # launcher-pc.json beside strata_bench's results.json: no serial numbers or user paths, only parts and links.
+    $doc = [ordered]@{ schema = 1; tool = 'strata-launcher'; version = $AppVersion; summary = (Get-PcSummary $Facts); short = (Get-PcShort $Facts)
+        warnings = @(Get-PcWarnings $Facts); pc = $Facts }
+    try { [IO.File]::WriteAllText((Join-Path $Dir 'launcher-pc.json'), ($doc | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false)) } catch {}
+}
+
+function Read-BenchPc([string]$Dir, $Json) {
+    # -> @{ Short; Summary } for a results folder: launcher-pc.json when the launcher ran it, else what strata_bench
+    # recorded itself (the GPU's link read near idle after the run, and the RAM size).
+    $file = Join-Path $Dir 'launcher-pc.json'
+    if (Test-Path -LiteralPath $file) {
+        try { $p = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json; return [pscustomobject]@{ Short = $p.short; Summary = $p.summary } } catch {}
+    }
+    $m = $Json.machine
+    $pcie = @($m.gpu_detail | ForEach-Object { $_.pcie } | Where-Object { $_ }) | Select-Object -First 1
+    if (-not $pcie -and -not $m.ram_gib) { return [pscustomobject]@{ Short = '-'; Summary = '' } }
+    $short = (@($(if ($m.ram_gib) { "$([math]::Round([double]$m.ram_gib)) GiB" }), $(if ($pcie) { "$pcie (idle)" })) | Where-Object { $_ }) -join ', '
+    return [pscustomobject]@{ Short = $short; Summary = "$short (recorded by strata_bench; RAM speed not recorded)" }
+}
+
+function Show-PcFacts {
+    $window.Cursor = [System.Windows.Input.Cursors]::Wait
+    try { $script:pcFacts = Get-PcFacts (Get-ModelDrives) } finally { $window.Cursor = $null }
+    $warn = @(Get-PcWarnings $script:pcFacts)
+    $ui.PcWarnings.Text = if ($warn) { ($warn | ForEach-Object { "- $_" }) -join "`n" } else { 'Nothing found that holds Strata back: RAM at its rated speed, the GPU at its full PCIe link.' }
+    $ui.PcWarnings.Foreground = if ($warn) { [System.Windows.Media.Brushes]::DarkRed } else { [System.Windows.Media.Brushes]::DarkGreen }
+    $ui.PcFacts.Text = (Format-PcFacts $script:pcFacts) -join "`r`n"
+}
+
 # ------------------------------------------------------------------------------------ model catalog
 # setup.py holds the catalog (sizes and RAM needs per quant); it is read from this checkout so it stays current.
 $CatalogPy = @'
@@ -3370,11 +3576,13 @@ $ui.ResFolderBtn.Add_Click({
     if ($row) { Start-Process explorer.exe -ArgumentList "`"$($row.Path)`"" }
 })
 $ui.ResCompareBtn.Add_Click({ Compare-Results })
+$ui.PcRefreshBtn.Add_Click({ Show-PcFacts })
 
 $ui.Tabs.Add_SelectionChanged({
     param($sender, $e)
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ServiceTab) { Update-ServiceStatus }
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.SetupTab) { Show-SetupSteps }
+    if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.PcTab -and -not $script:pcFacts) { Show-PcFacts }
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ConfigTab) { Open-ConfigEditor (@(Get-SelectedConfigs) | Select-Object -First 1) }
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ModelsTab -and -not $script:catalog) {
         Set-Status 'Reading the model catalog from setup.py...'

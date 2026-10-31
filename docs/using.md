@@ -16,6 +16,28 @@ catalog entry's figure. Select one to launch it, or several to benchmark them in
 | **Service** | Runs one model on demand in the background: the server starts without loading the model, the first request loads it, and it unloads after an idle time so the graphics card is free. Optionally saves the conversation before unloading. |
 | **Config** | A full editor for a model's `strata-*.json`: server settings (from Strata's own settings schema), engine options with explanations, model files, other engine arguments, and the raw JSON. Changes are listed and checked before saving, and the previous file is kept as `.bak`. **Save as new** makes a variant. |
 | **Setup** | Everything a new PC needs, and the place to update Strata. See [Setting up a PC](setup.md). |
+| **PC** | What sets Strata's speed on this PC, with what to do about it ([below](#the-pc-tab)). |
+
+## The PC tab
+
+Strata's speed depends on three parts of the PC, and the PC tab shows each one against what it could be:
+
+- **RAM speed.** Generating text reads the experts the GPU does not hold from RAM, so it runs at about the RAM's
+  bandwidth. Each stick is listed with the speed it runs at, its standard (JEDEC) speed and the speed in its part number
+  (what EXPO or XMP runs it at). RAM well below its rated speed usually means EXPO/XMP is off in the BIOS. Four large
+  sticks at a high speed is flagged too: many boards cannot hold it, and unstable RAM corrupts downloads and model files
+  without an error.
+- **The GPU's PCIe link.** Reading a prompt streams model weights to the GPU, so prompt speed follows the link: Gen5 x8
+  is half of Gen5 x16. A card below its full width is usually sharing lanes with an M.2 slot or a second x16 slot; the
+  tab lists the NVMe drives connected to the same CPU lanes as the card, and the board's manual says which slot shares
+  them. Some cards slow the link while idle, so check again with a model loaded.
+- **The drive the models are on.** Experts that do not fit in RAM are read from it while Strata answers; its link and
+  free space are shown, and the drive with the models is marked.
+
+Everything is read from Windows without admin rights. Each benchmark run from the Benchmark tab saves the same facts as
+`launcher-pc.json` next to `results.json` (parts and links only: no serial numbers or paths), and the **Results** tab's
+**PC** column shows them (`2x48@6000, 5.0 x8/16`). Comparing two runs from different hardware says so first. Runs from
+before this show what `strata_bench` recorded itself: the RAM size and the GPU's link read near idle.
 
 ## MTP speculative decoding
 

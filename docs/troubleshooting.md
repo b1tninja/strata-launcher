@@ -30,6 +30,14 @@ compacts at 90% of the limit by its own estimate (characters / 3), which runs ~3
 Qwen, so a 512K window compacts around 330-360K real tokens. The Headroom setting (2%) is already the
 smallest that is safe; the rest is Cline's estimate.
 
+**Strata is slower than other people's results on the same card.** Open the **PC** tab: it flags RAM running below
+its rated speed (EXPO/XMP off), a graphics card on fewer PCIe lanes than it has (an M.2 drive sharing its slot), and
+models on a slow or nearly full drive. [Details](using.md#the-pc-tab)
+
+**Downloads fail their checksum, or files come out damaged.** Often unstable RAM, especially four large sticks at
+EXPO/XMP speed. Test it (memtest86+ from a USB stick, or TestMem5 run as administrator) and lower the speed until it
+passes; Strata's setup re-downloads any damaged part.
+
 **A server will not stop, or another one stops.** Strata Launcher only stops servers it recognises
 (its own, or one whose `/health` names the selected config's model). A server started elsewhere on
 the same port with another model is left alone; stop it where it was started.
