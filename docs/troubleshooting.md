@@ -31,8 +31,13 @@ Qwen, so a 512K window compacts around 330-360K real tokens. The Headroom settin
 smallest that is safe; the rest is Cline's estimate.
 
 **Strata is slower than other people's results on the same card.** Open the **PC** tab: it flags RAM running below
-its rated speed (EXPO/XMP off), a graphics card on fewer PCIe lanes than it has (an M.2 drive sharing its slot), and
-models on a slow or nearly full drive. [Details](using.md#the-pc-tab)
+its rated speed (EXPO/XMP off), a graphics card on fewer PCIe lanes than it has (an M.2 drive sharing its slot),
+models on a slow or nearly full drive, and a small page file. [Details](using.md#the-pc-tab)
+
+**A model bigger than RAM reads its drive hard although RAM is free, or the server ends without a message.** The
+Windows commit limit (RAM + page file) is too small: Strata's log says `exceeds available commit` or `Windows commit:
+N GiB left`. Set a fixed page file of at least half the RAM (System Properties, Advanced, Performance, Virtual memory)
+and restart; the PC tab flags this.
 
 **Downloads fail their checksum, or files come out damaged.** Often unstable RAM, especially four large sticks at
 EXPO/XMP speed. Test it (memtest86+ from a USB stick, or TestMem5 run as administrator) and lower the speed until it

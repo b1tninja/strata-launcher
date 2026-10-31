@@ -53,6 +53,13 @@ Strata's speed depends on three parts of the PC, and the PC tab shows each one a
 - **The drive the models are on.** Experts that do not fit in RAM are read from it while Strata answers; its link and
   free space are shown, and the drive with the models is marked.
 
+The tab also shows Windows' **commit limit** (RAM plus the page file). Strata keeps experts in RAM only as far as the
+commit limit allows, whatever RAM is free, and a model that fills RAM can end without a message when the limit runs out.
+A limit under 1.5 times the RAM is flagged. Measured on 94 GB of RAM: a 22 GB system-managed page file capped Q5's
+experts in RAM at 56 GiB with 20 GB of RAM unused; a fixed 64 GB page file on another drive raised it to 66 GiB and made
+Q5 18-32% faster. The page file is mostly reserved space, so the drive it is on matters little; keeping it off the models'
+drive keeps it out of the way of their reads.
+
 Everything is read from Windows without admin rights. Each benchmark run from the Benchmark tab saves the same facts as
 `launcher-pc.json` next to `results.json` (parts and links only: no serial numbers or paths), and the **Results** tab's
 **PC** column shows them (`2x48@6000, 5.0 x8/16`). Comparing two runs from different hardware says so first. Runs from

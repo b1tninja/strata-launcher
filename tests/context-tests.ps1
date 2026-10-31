@@ -239,6 +239,15 @@ Assert-Is (@($w -match 'about 4 GB/s').Count) 1 'models on a PCIe 3.0 x4 drive'
 Assert-Is (@($w -match 'E: has 12 GB free').Count) 1 'little room where the models are'
 $otherFull = [pscustomobject]@{ Sticks = @(); Gpus = @(); Drives = @((New-Drive 'sys' 'x' 5 4 @('C') $false 5), $fast) }
 Assert-Is @(Get-PcWarnings $otherFull).Count 0 'a full drive without models is not flagged'
+# the commit limit: 94 GB of RAM with a 22 GB system-managed page file capped Q5's RAM budget; a fixed 64 GB one did not
+$lowCommit = [pscustomobject]@{ RamGB = 94; CommitGB = 116; PageAuto = $true; PageFiles = @([pscustomobject]@{ Path = 'D:\pagefile.sys'; GB = 22 }); Sticks = @(); Gpus = @(); Drives = @() }
+$w = @(Get-PcWarnings $lowCommit)
+Assert-Is (@($w -match 'commit only 116 GB \(RAM \+ page file: 22 GB on D:, system managed\)').Count) 1 'a small page file is named with its drive'
+Assert-Is (@($w -match 'at least 48 GB').Count) 1 'half the RAM, rounded up to 16 GB'
+$okCommit = [pscustomobject]@{ RamGB = 94; CommitGB = 158; PageAuto = $false; PageFiles = @([pscustomobject]@{ Path = 'M:\pagefile.sys'; GB = 64 }); Sticks = @(); Gpus = @(); Drives = @() }
+Assert-Is @(Get-PcWarnings $okCommit).Count 0 'a 64 GB page file beside 94 GB of RAM: no warning'
+$noPage = [pscustomobject]@{ RamGB = 64; CommitGB = 64; PageAuto = $false; PageFiles = @(); Sticks = @(); Gpus = @(); Drives = @() }
+Assert-Is (@(Get-PcWarnings $noPage) -match 'page file: none').Count 1 'no page file at all'
 # Results: a folder the launcher benchmarked has launcher-pc.json; an older one falls back to strata_bench's own record
 $tmp = Join-Path $env:TEMP "pc-test-$PID"; New-Item -ItemType Directory -Force $tmp | Out-Null
 try {

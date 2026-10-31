@@ -3154,10 +3154,16 @@ function Get-PcFacts([string[]]$ModelDrives) {
         [pscustomobject]@{ Name = $disk.FriendlyName; SizeGB = [math]::Round($disk.Size / 1GB); Gen = $l.Gen; Width = $l.Width
             MaxGen = $l.MaxGen; MaxWidth = $l.MaxWidth; Location = $l.Location; Letters = $letters; Free = $free
             Models = [bool](@($letters | Where-Object { $ModelDrives -contains $_ }).Count) } })
+    # the commit limit (RAM + page file) caps what Strata may hold in RAM, however much RAM is free
+    $cs = Get-CimInstance Win32_ComputerSystem
+    $pages = @(Get-CimInstance Win32_PageFileUsage -ErrorAction SilentlyContinue | ForEach-Object {
+        [pscustomobject]@{ Path = [string]$_.Name; GB = [math]::Round($_.AllocatedBaseSize / 1024) } })
     [pscustomobject]@{
         Cpu = $cpu.Name.Trim(); Cores = [int]$cpu.NumberOfCores; Threads = [int]$cpu.NumberOfLogicalProcessors
         L3MB = [math]::Round($cpu.L3CacheSize / 1024)
-        RamGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+        RamGB = [math]::Round($cs.TotalPhysicalMemory / 1GB)
+        CommitGB = [math]::Round((Get-CimInstance Win32_OperatingSystem).TotalVirtualMemorySize / 1MB)
+        PageFiles = $pages; PageAuto = [bool]$cs.AutomaticManagedPagefile
         Sticks = $sticks; Gpus = $gpus; Drives = $drives
     }
 }
@@ -3180,6 +3186,11 @@ function Get-PcWarnings($Facts) {
         if ($sticks.Count -ge 4 -and ($sticks | Measure-Object GB -Minimum).Minimum -ge 32 -and $run -ge 5600) {
             $out += "Four $(($sticks | Measure-Object GB -Minimum).Minimum) GB sticks at $run MT/s: more than most boards and memory controllers hold stably. Test it before trusting it with downloads and model files."
         }
+    }
+    if ($Facts.CommitGB -gt 0 -and $Facts.RamGB -gt 0 -and $Facts.CommitGB -lt $Facts.RamGB * 1.5) {
+        # measured: 94 GB of RAM with a 22 GB page file capped a model's RAM budget at 56 GiB with 20 GB of RAM still free
+        $pf = @($Facts.PageFiles | ForEach-Object { "$($_.GB) GB on $($_.Path.Substring(0, 2))" }) -join ', '
+        $out += "Windows can commit only $($Facts.CommitGB) GB (RAM + page file: $(if ($pf) { $pf } else { 'none' })$(if ($Facts.PageAuto) { ', system managed' })). Strata keeps experts in RAM only as far as the commit limit allows, so models bigger than RAM read more from the drive, and a model that fills RAM can end without a message when it runs out. Set a fixed page file of at least $([math]::Ceiling($Facts.RamGB / 2 / 16) * 16) GB, best on a drive the models are not on (System Properties, Advanced, Performance, Virtual memory), and restart."
     }
     foreach ($g in @($Facts.Gpus)) {
         if ($g.MaxWidth -gt 0 -and $g.Width -gt 0 -and $g.Width -lt $g.MaxWidth) {
@@ -3223,6 +3234,10 @@ function Format-PcFacts($Facts) {
     $l = @()
     $l += "CPU    $($Facts.Cpu)    $($Facts.Cores) cores / $($Facts.Threads) threads    L3 $($Facts.L3MB) MB"
     $l += "RAM    $($Facts.RamGB) GB usable"
+    if ($Facts.CommitGB) {
+        $pf = @($Facts.PageFiles | ForEach-Object { "$($_.Path) $($_.GB) GB" }) -join ', '
+        $l += "       commit limit $($Facts.CommitGB) GB (RAM + page file: $(if ($pf) { $pf } else { 'none' })$(if ($Facts.PageAuto) { ', system managed' } else { ', fixed' }))"
+    }
     foreach ($s in @($Facts.Sticks)) {
         $rated = Get-RamRating $s.Part
         $l += '       {0,-24} {1,3} GB  {2,-22} runs {3} MT/s  (standard {4}{5})' -f $s.Slot, $s.GB, $s.Part, $s.Running, $s.Jedec, $(if ($rated) { ", rated $rated" } else { '' })
