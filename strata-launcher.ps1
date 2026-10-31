@@ -127,6 +127,7 @@ $defaults = [ordered]@{
     StopAfter     = $true
     LastConfig    = ''
     DataFolder    = ''
+    ArchiveFolder = ''
     FitOnly       = $false
     ServiceConfig = ''
     ServiceIdle   = '15'
@@ -275,6 +276,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
               <Button x:Name="WebBtn" Content="Open web UI"/>
               <Button x:Name="LogBtn" Content="Open engine log"/>
               <Button x:Name="ConfigBtn" Content="Open config"/>
+              <Button x:Name="ArchiveModelBtn" Content="Archive..." ToolTip="Move this model into the archive (Models tab): copied and checked first, then removed from the data folder. Install from archive brings it back without downloading."/>
               <Button x:Name="RemoveModelBtn" Content="Remove model..." ToolTip="Delete this model's files and config to free the disk space (Strata decides what is safe to delete; files another model uses stay)"/>
             </WrapPanel>
 
@@ -417,21 +419,28 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
               <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
               <RowDefinition Height="*"/>
               <RowDefinition Height="8"/>
               <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <DockPanel Grid.Row="0" Margin="0,0,0,8">
-              <TextBlock Text="Data folder" Style="{StaticResource Label}"/>
+              <TextBlock Text="Data folder" Style="{StaticResource Label}" Width="90"/>
               <Button x:Name="CatRefreshBtn" DockPanel.Dock="Right" Content="Refresh" Margin="8,0,0,0"/>
               <Button x:Name="DataBrowse" DockPanel.Dock="Right" Content="Browse..." Margin="8,0,0,0"/>
-              <TextBox x:Name="DataBox" ToolTip="Where setup puts models and packs (its --models-dir drive); free space is measured here"/>
+              <TextBox x:Name="DataBox" ToolTip="Where setup puts models and packs (its --models-dir drive); free space is measured here. Installed models run from here: put it on the fastest drive."/>
             </DockPanel>
             <DockPanel Grid.Row="1" Margin="0,0,0,8">
+              <TextBlock Text="Archive" Style="{StaticResource Label}" Width="90"/>
+              <Button x:Name="ArchiveBrowse" DockPanel.Dock="Right" Content="Browse..." Margin="8,0,0,0"/>
+              <TextBlock x:Name="ArchiveText" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#FF444444"/>
+              <TextBox x:Name="ArchiveBox" ToolTip="Where models are kept when they are not installed: a big drive, slower is fine. Each file is stored once, however many models share it (docs/model-archive.md)."/>
+            </DockPanel>
+            <DockPanel Grid.Row="2" Margin="0,0,0,8">
               <CheckBox x:Name="FitOnlyChk" DockPanel.Dock="Right" Content="Only what fits" Margin="8,0,0,0"/>
               <TextBlock x:Name="MachineText" VerticalAlignment="Center" TextWrapping="Wrap"/>
             </DockPanel>
-            <ListView Grid.Row="2" x:Name="CatalogList" SelectionMode="Single">
+            <ListView Grid.Row="3" x:Name="CatalogList" SelectionMode="Single">
               <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                   <Style.Triggers>
@@ -448,19 +457,28 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
                   <GridViewColumn Header="Download GB" Width="85" DisplayMemberBinding="{Binding Download}"/>
                   <GridViewColumn Header="Disk need GB" Width="85" DisplayMemberBinding="{Binding Disk}"/>
                   <GridViewColumn Header="RAM need GB" Width="85" DisplayMemberBinding="{Binding Ram}"/>
-                  <GridViewColumn Header="RAM" Width="190" DisplayMemberBinding="{Binding RamFit}"/>
-                  <GridViewColumn Header="Disk" Width="120" DisplayMemberBinding="{Binding DiskFit}"/>
-                  <GridViewColumn Header="Installed" Width="65" DisplayMemberBinding="{Binding Installed}"/>
+                  <GridViewColumn Header="RAM" Width="165" DisplayMemberBinding="{Binding RamFit}"/>
+                  <GridViewColumn Header="Disk" Width="115" DisplayMemberBinding="{Binding DiskFit}"/>
+                  <GridViewColumn Width="160" DisplayMemberBinding="{Binding State}">
+                    <GridViewColumn.Header><TextBlock Text="State" ToolTip="Installed: on the data folder's drive with a config, ready to run. Downloaded: kept in the archive, installed again in minutes without downloading."/></GridViewColumn.Header>
+                  </GridViewColumn>
                 </GridView>
               </ListView.View>
             </ListView>
-            <DockPanel Grid.Row="4">
-              <Button x:Name="CatRemoveBtn" DockPanel.Dock="Right" Content="Remove..." Margin="8,0,0,0" VerticalAlignment="Top" IsEnabled="False"
-                      ToolTip="Delete the selected installed model's files and config to free the disk space (Strata decides what is safe to delete; files another model uses stay)"/>
-              <Button x:Name="InstallBtn" DockPanel.Dock="Right" Content="Install with setup..." Margin="8,0,0,0" VerticalAlignment="Top"/>
+            <StackPanel Grid.Row="5">
+              <WrapPanel Margin="0,0,0,8">
+                <Button x:Name="InstallBtn" Content="Install with setup..." ToolTip="Download and set up the selected model with Strata's setup, into the data folder"/>
+                <Button x:Name="ArcInstallBtn" Content="Install from archive" IsEnabled="False" ToolTip="Copy the selected Downloaded model from the archive into the data folder, checking every file, and write its config: no download"/>
+                <Button x:Name="ArcDownloadBtn" Content="Download to archive..." IsEnabled="False" ToolTip="Download (and prepare) the selected model with Strata's setup straight into the archive, without installing it"/>
+                <Button x:Name="ArcArchiveBtn" Content="Archive..." IsEnabled="False" ToolTip="Move the selected installed model into the archive: copied and checked first, then removed from the data folder"/>
+                <Button x:Name="ArcCopyBtn" Content="Copy to archive" IsEnabled="False" ToolTip="Keep a copy of the selected installed model in the archive; it stays installed"/>
+                <Button x:Name="ArcDeleteBtn" Content="Delete from archive..." IsEnabled="False" ToolTip="Delete the selected model from the archive; files another archived model uses stay"/>
+                <Button x:Name="CatRemoveBtn" Content="Remove..." IsEnabled="False"
+                        ToolTip="Delete the selected installed model's files and config to free the disk space (Strata decides what is safe to delete; files another model uses stay). The archive is not touched."/>
+              </WrapPanel>
               <TextBlock x:Name="CatDetail" TextWrapping="Wrap" Foreground="#FF444444"
                          Text="Green: fits with every expert in RAM. Yellow: runs, with part of the experts read from the SSD (slower). Red: does not fit this PC. Requirements come from this Strata checkout's setup.py; they are setup's estimates."/>
-            </DockPanel>
+            </StackPanel>
           </Grid>
         </TabItem>
 
@@ -677,6 +695,9 @@ try:
         r = {"error": "this Strata is too old to remove models from here: update it first (Setup tab)"}
     elif action == "plan":
         r = s.removal_plan(s.find_config(tag))
+    elif action == "files":                       # what the model uses (the removal plan's own list), for the archive
+        f, d = s.model_paths(s.read_config(s.find_config(tag)))
+        r = {"paths": [str(x) for x in s.with_shards(f)] + [str(x) for x in d]}
     else:
         r = mod.Tools(s).strata_remove(tag, confirm=True)
 except Exception as e:
@@ -711,7 +732,9 @@ function Remove-Model($Row) {
     $kept = @($plan.keep | ForEach-Object { "  $($_.path)`n      ($($_.reason))" })
     $msg = "Remove $($Row.Model) ($($Row.File))? This frees $(& $fmt $plan.bytes) and cannot be undone.`n`nDeleted:`n$($lines -join "`n")" +
         $(if ($kept) { "`n`nKept:`n$($kept -join "`n")" } else { '' }) +
-        $(if (Get-SessionDir $Row) { "`n`nIts session files (in $(Get-SessionDir $Row)) are kept." } else { '' })
+        $(if (Get-SessionDir $Row) { "`n`nIts session files (in $(Get-SessionDir $Row)) are kept." } else { '' }) +
+        $(if (@($script:archived | Where-Object { ([string]$_.model_name).ToLower() -eq $Row.Model.ToLower() }).Count) { "`n`nIt stays in the archive: Install from archive (Models tab) brings it back." }
+          else { "`n`nIt is not in the archive: Archive... keeps it on this PC instead." })
     if ([System.Windows.MessageBox]::Show($msg, 'Remove model', 'OKCancel', 'Warning') -ne 'OK') { Set-Status 'Nothing was removed.'; return }
     $window.Cursor = [System.Windows.Input.Cursors]::Wait
     try { $r = Invoke-StrataHelper $tag 'delete' } finally { $window.Cursor = $null }
@@ -3264,6 +3287,195 @@ function Show-PcFacts {
     $ui.PcFacts.Text = (Format-PcFacts $script:pcFacts) -join "`r`n"
 }
 
+# ------------------------------------------------------------------------------------ model archive
+# Installed (the data folder, ready to run) vs Downloaded (kept in the archive, each unique file once): see
+# docs/model-archive.md. strata-archive.ps1 holds the archive itself; the long copies run it in a console window.
+. (Join-Path $PSScriptRoot 'strata-archive.ps1')
+$script:arcJob = $null       # the running strata-archive.ps1 window: @{ Proc; What; Then }
+$script:archived = @()       # Get-ArchiveIndex of the archive folder
+
+function Get-DefaultArchiveRoot([string]$DataDir) {
+    # The fixed drive with the most free space other than the data folder's: big and slow is fine for keeping.
+    $dataRoot = try { [IO.Path]::GetPathRoot($DataDir) } catch { '' }
+    $d = [IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady -and $_.Name -ne $dataRoot } |
+        Sort-Object AvailableFreeSpace -Descending | Select-Object -First 1
+    if ($d) { return (Join-Path $d.Name 'Strata-archive') }
+    return ''
+}
+
+function Get-ArchiveRoot { Clean-Path $ui.ArchiveBox.Text }
+
+function Format-GB($Bytes) { '{0:n1} GB' -f ($Bytes / 1e9) }
+
+function Update-ArchiveInfo {
+    $root = Get-ArchiveRoot
+    $script:archived = if ($root) { @(Get-ArchiveIndex $root) } else { @() }
+    if (-not $root) { $ui.ArchiveText.Text = 'no archive folder'; return }
+    $s = Get-ArchiveSummary $root
+    $free = Get-FreeGB $root
+    $ui.ArchiveText.Text = "$($s.Models) model(s), $(Format-GB $s.Bytes)" +
+        $(if ($s.Logical -gt $s.Bytes) { " (shared files save $(Format-GB ($s.Logical - $s.Bytes)))" } else { '' }) +
+        $(if ($null -ne $free) { ", $free GB free" } else { '' })
+}
+
+function Get-ArchiveTag($Row) { [IO.Path]::GetFileNameWithoutExtension($Row.File) -replace '^strata-', '' }
+
+function Test-ArchiveBusy {
+    if ($script:arcJob -and -not $script:arcJob.Proc.HasExited) {
+        [System.Windows.MessageBox]::Show("$($script:arcJob.What) is still running in its window. One archive job at a time.", 'Strata archive') | Out-Null
+        return $true
+    }
+    return $false
+}
+
+function Start-ArchiveJob([string]$What, [string[]]$ArgList, [scriptblock]$Then, $Data) {
+    # strata-archive.ps1 in its own console window, so a 150 GB copy never freezes this one. $Then runs when it has
+    # finished without error (Update-ArchiveJob, from the timer), with $Data as its argument: a plain script block, not
+    # a closure (GetNewClosure would hide this script's functions from it).
+    $proc = Start-Process -FilePath powershell.exe -PassThru `
+        -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (QPath (Join-Path $PSScriptRoot 'strata-archive.ps1'))) + $ArgList)
+    $script:arcJob = @{ Proc = $proc; What = $What; Then = $Then; Data = $Data }
+    Set-Status "${What}: running in its own window."
+}
+
+function Update-ArchiveJob {
+    $j = $script:arcJob
+    if (-not $j -or -not $j.Proc.HasExited) { return }
+    $script:arcJob = $null
+    if ($j.Proc.ExitCode -eq 0) {
+        Set-Status "$($j.What): done."
+        if ($j.Then) { & $j.Then $j.Data }
+    } else {
+        Set-Status "$($j.What) stopped (its window said why); nothing installed or archived was removed."
+    }
+    Update-ArchiveInfo
+    Read-Configs
+    Update-CatalogFit
+}
+
+function Test-ArchiveRootOk {
+    $root = Get-ArchiveRoot
+    if (-not $root) { [System.Windows.MessageBox]::Show('Choose an archive folder on the Models tab first (a big drive; slower is fine).', 'Strata archive') | Out-Null; return $false }
+    if (Get-RelPath (Clean-Path $ui.DataBox.Text) $root) {
+        [System.Windows.MessageBox]::Show("The archive folder cannot be inside the data folder: Strata's removal would see it as model files.", 'Strata archive') | Out-Null; return $false
+    }
+    New-Item -ItemType Directory -Force -Path $root -ErrorAction SilentlyContinue | Out-Null
+    return (Test-Path -LiteralPath $root)
+}
+
+function Save-ArchiveModel($Row, [switch]$Keep) {
+    # Archive... (the installed copy is removed once everything is in the archive) or Copy to archive (-Keep).
+    if (-not $Row -or (Test-ArchiveBusy) -or -not (Test-ArchiveRootOk)) { return }
+    if (-not $Keep -and (Test-RowRunning $Row)) { Set-Status "$($Row.Model) is running: stop it first, then archive it."; return }
+    if (-not $Keep -and (Test-ServiceRow $Row)) { Set-Status "$($Row.Model) is the Service tab's model: remove the service first, then archive the model."; return }
+    $tag = Get-ArchiveTag $Row
+    $root = Get-ArchiveRoot
+    $data = Clean-Path $ui.DataBox.Text
+    Set-Status "Asking Strata which files $($Row.Model) uses..."
+    $r = Invoke-StrataHelper $tag 'files'
+    if ($r.error) { Set-Status "Cannot archive $($Row.Model): $($r.error)"; return }
+    $files = @(Get-ArchiveFiles @($r.paths) $data (Get-Root))
+    $plan = Get-ArchivePlan $root $files
+    $free = Get-FreeGB $root
+    if ($null -ne $free -and $plan.New / 1e9 -gt $free - 1) {
+        Set-Status "The archive drive has $free GB free; $($Row.Model) needs up to $(Format-GB $plan.New) there."; return
+    }
+    $remove = $null
+    if (-not $Keep) {
+        $remove = Invoke-StrataHelper $tag 'plan'
+        if ($remove.error) { Set-Status "Cannot archive $($Row.Model): $($remove.error)"; return }
+    }
+    $ext = @($files | Where-Object { $_.External })
+    $msg = "$(if ($Keep) { 'Copy' } else { 'Archive' }) $($Row.Model)?`n`n" +
+        "Into $root : $(Format-GB $plan.Total), of which up to $(Format-GB $plan.New) is copied (each copy checked by SHA-256) " +
+        "and $(Format-GB $plan.Have) is already there (shared files are linked, not copied)." +
+        $(if ($remove) { "`n`nThen, once every file is in the archive and checked, it is removed from $data`: that frees $(Format-GB $remove.bytes) (Strata's removal; files another installed model uses stay). Install from archive brings it back without downloading." } else { "`n`nIt stays installed." }) +
+        $(if ($ext) { "`n`nNot archived (outside the data folder, kept where they are):`n" + (($ext | ForEach-Object { "  $($_.Path)" }) -join "`n") } else { '' }) +
+        "`n`nThe copy runs in its own window."
+    if ([System.Windows.MessageBox]::Show($msg, 'Strata archive', 'OKCancel', 'Question') -ne 'OK') { Set-Status 'Nothing was archived.'; return }
+    $list = Join-Path $TempDir "archive-$tag.json"
+    if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Path $TempDir | Out-Null }
+    [IO.File]::WriteAllText($list, (ConvertTo-Json @($r.paths)), (New-Object Text.UTF8Encoding $false))
+    $then = if ($Keep) { $null } else {
+        { param($tag)
+          $d = Invoke-StrataHelper $tag 'delete'
+          Set-Status $(if ($d.error) { "Archived, but removing the installed copy failed: $($d.error)" } else { "Archived $tag and removed it from the data folder." }) }
+    }
+    Start-ArchiveJob "$(if ($Keep) { 'Copying' } else { 'Archiving' }) $tag" @('-ArcAction', 'Copy', '-ArcRoot', (QPath $root), '-ArcTag', $tag,
+        '-ArcData', (QPath $data), '-ArcStrata', (QPath (Get-Root)), '-ArcConfig', (QPath $Row.Path), '-ArcFiles', (QPath $list)) $then $tag
+}
+
+function Install-ArchivedModel([string]$Tag) {
+    if (-not $Tag -or (Test-ArchiveBusy)) { return }
+    $root = Get-ArchiveRoot
+    $m = @($script:archived | Where-Object { $_.Tag -eq $Tag }) | Select-Object -First 1
+    if (-not $m) { return }
+    $data = Clean-Path $ui.DataBox.Text
+    $free = Get-FreeGB $data
+    if ($null -ne $free -and $m.Bytes / 1e9 -gt $free - 1) { Set-Status "$data has $free GB free; $Tag needs up to $(Format-GB $m.Bytes)."; return }
+    $cfg = Join-Path (Get-Root) "strata-$Tag.json"
+    $msg = "Install $($m.model_name) from the archive?`n`nInto $data : up to $(Format-GB $m.Bytes) (files already installed with the same content are kept or linked, the rest copied and checked by SHA-256), " +
+        "then its config $(Split-Path -Leaf $cfg)$(if (Test-Path -LiteralPath $cfg) { ' (already there: left as it is)' })." +
+        "`n`nNothing is downloaded. It runs in its own window."
+    if ([System.Windows.MessageBox]::Show($msg, 'Strata archive', 'OKCancel', 'Question') -ne 'OK') { return }
+    Start-ArchiveJob "Installing $Tag" @('-ArcAction', 'Install', '-ArcRoot', (QPath $root), '-ArcTag', $Tag, '-ArcData', (QPath $data), '-ArcStrata', (QPath (Get-Root))) $null
+}
+
+function Remove-ArchivedModel([string]$Tag) {
+    if (-not $Tag -or (Test-ArchiveBusy)) { return }
+    $root = Get-ArchiveRoot
+    $m = @($script:archived | Where-Object { $_.Tag -eq $Tag }) | Select-Object -First 1
+    if (-not $m) { return }
+    $installed = @($script:configs | Where-Object { $_.Model.ToLower() -eq ([string]$m.model_name).ToLower() }).Count
+    $msg = "Delete $($m.model_name) from the archive ($root)?`n`nFiles another archived model uses stay. This cannot be undone." +
+        $(if ($installed) { "`n`nThe installed copy is not touched." } else { "`n`nIt is not installed: after this it would have to be downloaded again." })
+    if ([System.Windows.MessageBox]::Show($msg, 'Strata archive', 'OKCancel', 'Warning') -ne 'OK') { return }
+    $window.Cursor = [System.Windows.Input.Cursors]::Wait
+    try { $freed = Remove-ArchiveModel $root $Tag } finally { $window.Cursor = $null }
+    Set-Status "Deleted $Tag from the archive; freed $(Format-GB $freed)."
+    Update-ArchiveInfo; Update-CatalogFit
+}
+
+function Start-DownloadToArchive($CatRow) {
+    # Strata's setup with its data folder inside the archive (so the download and any preparation happen on the archive
+    # drive), then the result is moved into the archive (same drive: no copy) and the config setup wrote is taken away.
+    if (-not $CatRow -or -not $CatRow.Family -or (Test-ArchiveBusy) -or -not (Test-ArchiveRootOk)) { return }
+    if ($CatRow.Installed) {   # setup would point the installed model's config into the archive
+        [System.Windows.MessageBox]::Show("$($CatRow.Quant) is installed: use Copy to archive (or Archive...) instead.", 'Strata archive') | Out-Null; return
+    }
+    $bat = Join-Path (Get-Root) 'START-HERE.bat'
+    if (-not (Test-Path -LiteralPath $bat)) { [System.Windows.MessageBox]::Show("Missing $bat", 'Strata') | Out-Null; return }
+    $root = Get-ArchiveRoot
+    $stage = Join-Path $root 'data'
+    $msg = "Download $($CatRow.Title) $($CatRow.Quant) into the archive?`n`nSetup downloads $($CatRow.Download) GB (and prepares the model where that is needed) into $stage, " +
+        "then it is moved into the archive (each unique file once) and shows as Downloaded. Install from archive copies it to the data folder when you want to run it.`n`nSetup opens in its own window."
+    if ([System.Windows.MessageBox]::Show($msg, 'Strata archive', 'OKCancel', 'Question') -ne 'OK') { return }
+    $line = "$(QPath $bat) --family $($CatRow.Family) --model $($CatRow.Quant) --data-dir $(QPath $stage) --setup --no-start --yes"
+    $proc = Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList "/s /c `"$line`"" -WorkingDirectory (Get-Root) -PassThru
+    $script:arcJob = @{ Proc = $proc; What = "Setup for $($CatRow.Quant) (into the archive)"; Data = @{ Root = $root; Stage = $stage; Strata = (Get-Root) }
+        Then = { param($d) Move-SetupIntoArchive $d } }
+    Set-Status "Setup for $($CatRow.Quant) runs in its own window; the model moves into the archive when it has finished."
+}
+
+function Move-SetupIntoArchive($D) {
+    # After Download to archive's setup: the config it wrote points into the stage folder. Move the files in, then take
+    # setup's config, start script and log away (the model is Downloaded, not Installed).
+    $esc = [regex]::Escape(($D.Stage -replace '\\', '\\'))
+    $cfg = Get-ChildItem -LiteralPath $D.Strata -Filter 'strata-*.json' -File | Sort-Object LastWriteTime -Descending |
+        Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match $esc } | Select-Object -First 1
+    if (-not $cfg) { Set-Status "Setup finished, but no config points into $($D.Stage); nothing was moved."; return }
+    $tag = $cfg.BaseName -replace '^strata-', ''
+    $r = Invoke-StrataHelper $tag 'files'
+    if ($r.error) { Set-Status "Cannot read what $tag uses: $($r.error)"; return }
+    $list = Join-Path $TempDir "archive-$tag.json"
+    [IO.File]::WriteAllText($list, (ConvertTo-Json @($r.paths)), (New-Object Text.UTF8Encoding $false))
+    Start-ArchiveJob "Moving $tag into the archive" @('-ArcAction', 'Ingest', '-ArcRoot', (QPath $D.Root), '-ArcTag', $tag, '-ArcData', (QPath $D.Stage),
+        '-ArcStrata', (QPath $D.Strata), '-ArcConfig', (QPath $cfg.FullName), '-ArcFiles', (QPath $list)) {
+        param($x)
+        foreach ($f in @($x.Cfg, (Join-Path $x.Strata "run-$($x.Tag).bat"), (Join-Path $x.Strata "strata-$($x.Tag).log"))) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+    } @{ Cfg = $cfg.FullName; Strata = $D.Strata; Tag = $tag }
+}
+
 # ------------------------------------------------------------------------------------ model catalog
 # setup.py holds the catalog (sizes and RAM needs per quant); it is read from this checkout so it stays current.
 $CatalogPy = @'
@@ -3385,6 +3597,8 @@ function Update-CatalogFit {
             RamFit    = $ramFit
             DiskFit   = $diskFit
             Installed = $(if ($isInstalled) { 'yes' } else { '' })
+            State     = ''
+            ArcTag    = ''
             Key       = ('{0}-{1}' -f $m.name, $m.quant).ToLower()   # the installed config's model name
             Level     = $level
             About     = "$($m.title) $($m.quant): $($m.about). Family: $($m.family_about)." +
@@ -3393,6 +3607,46 @@ function Update-CatalogFit {
         }
         $script:catalogRows.Add($row)
     }
+    Set-CatalogStates
+}
+
+function Set-CatalogStates {
+    # Installed / Downloaded for every row; an archived model the catalog does not list (a model of your own) gets a row
+    # of its own, so it can be installed again.
+    $byName = @{}
+    foreach ($a in $script:archived) { $byName[([string]$a.model_name).ToLower()] = $a }
+    $seen = @{}
+    foreach ($row in @($script:catalogRows)) {
+        $a = $byName[$row.Key]
+        $seen[$row.Key] = $true
+        $row.ArcTag = if ($a) { $a.Tag } else { '' }
+        $row.State = @($(if ($row.Installed) { 'Installed' }), $(if ($a) { 'Downloaded' })) -join ' + ' -replace '^ \+ | \+ $', ''
+    }
+    foreach ($a in $script:archived) {
+        $k = ([string]$a.model_name).ToLower()
+        if ($seen[$k]) { continue }
+        $inst = [bool](@($script:configs | Where-Object { $_.Model.ToLower() -eq $k }).Count)
+        $script:catalogRows.Add([pscustomobject]@{ Title = $a.model_name; Family = ''; Quant = ''; Download = '-'; Disk = '{0:n0}' -f ($a.Bytes / 1e9)
+            Ram = '-'; RamFit = '(not in the catalog)'; DiskFit = ''; Installed = $(if ($inst) { 'yes' } else { '' })
+            State = $(if ($inst) { 'Installed + Downloaded' } else { 'Downloaded' }); ArcTag = $a.Tag; Key = $k; Level = 'ok'
+            About = "$($a.model_name): archived $($a.archived) ($(Format-GB $a.Bytes)). Not in this Strata's catalog: a model of your own, or one the catalog no longer lists." })
+    }
+    Update-CatalogButtons
+}
+
+function Update-CatalogButtons {
+    $row = $ui.CatalogList.SelectedItem
+    $ui.CatRemoveBtn.IsEnabled = [bool]($row -and $row.Installed)
+    $ui.InstallBtn.IsEnabled = [bool](-not $row -or $row.Family)
+    $ui.ArcInstallBtn.IsEnabled = [bool]($row -and $row.ArcTag -and -not $row.Installed)
+    $ui.ArcDownloadBtn.IsEnabled = [bool]($row -and $row.Family -and -not $row.ArcTag -and -not $row.Installed)
+    $ui.ArcArchiveBtn.IsEnabled = [bool]($row -and $row.Installed)
+    $ui.ArcCopyBtn.IsEnabled = [bool]($row -and $row.Installed -and -not $row.ArcTag)
+    $ui.ArcDeleteBtn.IsEnabled = [bool]($row -and $row.ArcTag)
+}
+
+function Get-CatalogConfigRow($CatRow) {
+    $script:configs | Where-Object { $_.Model.ToLower() -eq $CatRow.Key } | Select-Object -First 1
 }
 
 function Install-CatalogModel {
@@ -3584,6 +3838,7 @@ $ui.Tabs.Add_SelectionChanged({
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.SetupTab) { Show-SetupSteps }
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.PcTab -and -not $script:pcFacts) { Show-PcFacts }
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ConfigTab) { Open-ConfigEditor (@(Get-SelectedConfigs) | Select-Object -First 1) }
+    if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ModelsTab) { Update-ArchiveInfo; if ($script:catalog) { Update-CatalogFit } }
     if ($e.OriginalSource -eq $ui.Tabs -and $ui.Tabs.SelectedItem -eq $ui.ModelsTab -and -not $script:catalog) {
         Set-Status 'Reading the model catalog from setup.py...'
         Read-Catalog
@@ -3600,8 +3855,19 @@ $ui.DataBrowse.Add_Click({
 $ui.CatalogList.Add_SelectionChanged({
     $row = $ui.CatalogList.SelectedItem
     if ($row) { $ui.CatDetail.Text = $row.About }
-    $ui.CatRemoveBtn.IsEnabled = [bool]($row -and $row.Installed)
+    Update-CatalogButtons
 })
+$ui.ArchiveBox.Add_LostFocus({ Update-ArchiveInfo; Update-CatalogFit })
+$ui.ArchiveBrowse.Add_Click({
+    $p = Select-Folder $ui.ArchiveBox.Text 'Select the archive folder (a big drive; models kept there are not installed)'
+    if ($p) { $ui.ArchiveBox.Text = $p; Update-ArchiveInfo; Update-CatalogFit }
+})
+$ui.ArcInstallBtn.Add_Click({ Install-ArchivedModel $ui.CatalogList.SelectedItem.ArcTag })
+$ui.ArcDownloadBtn.Add_Click({ Start-DownloadToArchive $ui.CatalogList.SelectedItem })
+$ui.ArcArchiveBtn.Add_Click({ Save-ArchiveModel (Get-CatalogConfigRow $ui.CatalogList.SelectedItem) })
+$ui.ArcCopyBtn.Add_Click({ Save-ArchiveModel (Get-CatalogConfigRow $ui.CatalogList.SelectedItem) -Keep })
+$ui.ArcDeleteBtn.Add_Click({ Remove-ArchivedModel $ui.CatalogList.SelectedItem.ArcTag })
+$ui.ArchiveModelBtn.Add_Click({ $row = Get-Selected; if ($row) { Update-ArchiveInfo; Save-ArchiveModel $row } })
 $ui.InstallBtn.Add_Click({ Install-CatalogModel })
 $ui.CatRemoveBtn.Add_Click({
     $row = $ui.CatalogList.SelectedItem
@@ -3741,6 +4007,7 @@ $timer.Add_Tick({
         Update-SlotOp
         Update-ResumePending
         Update-SetupWatch
+        Update-ArchiveJob
         $script:svcTick++
         if ($script:svcTick % 5 -eq 0 -and $ui.Tabs.SelectedItem -eq $ui.ServiceTab) { Update-ServiceStatus }
     } catch {
@@ -3782,6 +4049,7 @@ $window.Add_Closing({
         StopAfter    = [bool]$ui.StopAfterChk.IsChecked
         LastConfig   = $(if ($sel.Count -gt 0) { $sel[0].Path } else { '' })
         DataFolder   = Clean-Path $ui.DataBox.Text
+        ArchiveFolder = Clean-Path $ui.ArchiveBox.Text
         FitOnly      = [bool]$ui.FitOnlyChk.IsChecked
         ServiceConfig = $(if ($ui.SvcModelBox.SelectedItem) { Join-Path (Get-Root) $ui.SvcModelBox.SelectedItem } else { '' })
         ServiceIdle  = $ui.SvcIdleBox.Text
@@ -3792,6 +4060,7 @@ $window.Add_Closing({
 $ui.SetupDataBox.Text = $(if ($firstChoice -and $firstChoice.Data) { $firstChoice.Data } elseif (Get-StrataReg 'DataDir') { Get-StrataReg 'DataDir' }
     elseif ($settings.DataFolder) { [string]$settings.DataFolder } else { Get-DefaultDataDir (Clean-Path $ui.SetupRootBox.Text) })
 if (-not $ui.DataBox.Text.Trim()) { $ui.DataBox.Text = $ui.SetupDataBox.Text }
+$ui.ArchiveBox.Text = $(if ($settings.ArchiveFolder) { [string]$settings.ArchiveFolder } else { Get-DefaultArchiveRoot (Clean-Path $ui.DataBox.Text) })
 if ($foundRoot) { Set-StrataReg 'StrataRoot' $foundRoot }
 Set-StrataReg 'AppDir' $PSScriptRoot
 if (-not $foundRoot) {

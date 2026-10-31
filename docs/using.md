@@ -12,11 +12,30 @@ catalog entry's figure. Select one to launch it, or several to benchmark them in
 | **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve, [MTP drafting and its depth](#mtp-speculative-decoding) and more; your config files are never changed. **Remove model...** deletes a model's files and config ([details](setup.md#removing-models)). **Sessions** and **Open Cline** are here too (below). |
 | **Benchmark** | Runs Strata's `strata_bench.py` against one or several models in turn, starting and stopping their servers, with live output. |
 | **Results** | Every benchmark run as a table (its MTP setting and draft acceptance, decode and prompt speed, time to first token, cache hits); compare two side by side. |
-| **Models** | Strata's model catalog with download size, disk and RAM needs against this PC, colour-coded by fit. **Install with setup...** downloads one; **Remove...** deletes an installed one ([details](setup.md#removing-models)). |
+| **Models** | Strata's model catalog with download size, disk and RAM needs against this PC, colour-coded by fit. **Install with setup...** downloads one; **Remove...** deletes an installed one ([details](setup.md#removing-models)). The **archive** keeps models on another drive without installing them ([below](#the-model-archive)). |
 | **Service** | Runs one model on demand in the background: the server starts without loading the model, the first request loads it, and it unloads after an idle time so the graphics card is free. Optionally saves the conversation before unloading. |
 | **Config** | A full editor for a model's `strata-*.json`: server settings (from Strata's own settings schema), engine options with explanations, model files, other engine arguments, and the raw JSON. Changes are listed and checked before saving, and the previous file is kept as `.bak`. **Save as new** makes a variant. |
 | **Setup** | Everything a new PC needs, and the place to update Strata. See [Setting up a PC](setup.md). |
 | **PC** | What sets Strata's speed on this PC, with what to do about it ([below](#the-pc-tab)). |
+
+## The model archive
+
+A model is **Installed** when it is in the data folder with its config, ready to run; it is **Downloaded** when it is
+kept in the archive folder (Models tab), typically on a bigger, slower drive. The **State** column shows which. Each
+unique file is stored once in the archive however many models share it (Unsloth's Q5/Q6/Q8 share 55 GB, the NVFP4
+versions 52 GB, every Qwen3.8 model the MTP draft layer), and every copy into or out of it is checked by SHA-256.
+
+| Button | What it does |
+| --- | --- |
+| **Archive...** (also on the Launch tab) | Copies the model into the archive, then removes it from the data folder: the fast drive gets the space back, and the model stays on this PC. |
+| **Copy to archive** | The same, but the model stays installed. |
+| **Install from archive** | Copies it back into the data folder and writes its config: minutes, no download. Files another installed model already has are linked, not copied. |
+| **Download to archive...** | Strata's setup downloads (and prepares) the model on the archive drive; it shows as Downloaded. |
+| **Delete from archive...** | Deletes it from the archive; files another archived model uses stay. |
+| **Remove...** | As before: deletes the installed model. The archive is never touched by it. |
+
+The long copies run in their own window. The archive is plain files and hard links (`blobs\` and `models\`); deleting
+the folder by hand is safe. Design and limits: [model-archive.md](model-archive.md).
 
 ## The PC tab
 
