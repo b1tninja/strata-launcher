@@ -16,7 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$AppVersion = '0.2.0'   # install.ps1 reads this line for the Settings > Apps entry
+$AppVersion = '0.3.0'   # install.ps1 reads this line for the Settings > Apps entry
 $SettingsPath = Join-Path $PSScriptRoot 'strata-launcher.settings.json'
 # Named strata-gui before: carry its settings over once.
 $oldSettings = Join-Path $PSScriptRoot 'strata-gui.settings.json'
