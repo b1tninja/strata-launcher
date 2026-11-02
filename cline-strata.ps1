@@ -20,7 +20,10 @@ param(
     [string]$StartScript,
     [string]$StrataBase = 'http://127.0.0.1:8080',
     [string]$Provider = 'openai-compatible',
-    [switch]$RestartStrata
+    [switch]$RestartStrata,
+    # Start Cline in Plan mode (its --plan). Cline CLI keeps one thinking level per session, so a planning session
+    # with more thinking and an acting one with less are two sessions.
+    [switch]$Plan
 )
 
 $ErrorActionPreference = 'Continue'
@@ -189,21 +192,16 @@ function Ensure-StrataModel {
         return (Wait-StrataReady)
     }
 
-    # Free a competing Ollama GPU model if one is sitting there
-    if (Get-Command ollama -ErrorAction SilentlyContinue) {
+    # Free a competing Ollama GPU model if one is sitting there. Only a running Ollama, over its HTTP API: the CLI
+    # starts the Ollama app when it is not running, and that app keeps the CLI's output pipe open forever.
+    if (Get-Process -Name ollama -ErrorAction SilentlyContinue) {
         try {
-            $ps = & ollama ps 2>$null | Out-String
-            if ($ps -match 'NAME') {
-                Write-Host 'Unloading Ollama models so Strata can use the GPU...'
-                & ollama ps 2>$null | Select-Object -Skip 1 | ForEach-Object {
-                    if ($_ -match '^\s*(\S+)') {
-                        $name = $Matches[1]
-                        if ($name -and $name -ne 'NAME') {
-                            Write-Host "  ollama stop $name"
-                            & ollama stop $name 2>$null | Out-Null
-                        }
-                    }
-                }
+            $models = @((Invoke-RestMethod 'http://127.0.0.1:11434/api/ps' -TimeoutSec 3).models)
+            if ($models.Count) { Write-Host 'Unloading Ollama models so Strata can use the GPU...' }
+            foreach ($m in $models) {
+                Write-Host "  ollama stop $($m.name)"
+                $body = @{ model = $m.name; keep_alive = 0 } | ConvertTo-Json -Compress
+                Invoke-RestMethod -Method Post 'http://127.0.0.1:11434/api/generate' -ContentType 'application/json' -Body $body -TimeoutSec 10 | Out-Null
             }
         } catch {}
     }
@@ -330,8 +328,10 @@ function Ensure-ClineStrataAuth {
                     $entry | Add-Member -NotePropertyName maxInputTokens -NotePropertyValue $Tokens -Force
                     $changed = $true
                 }
-                $maxOut = [Math]::Min(8192, [int]($Tokens / 4))
-                if ($null -eq $entry.maxTokens) {
+                # Strata counts thinking in the reply cap and ends thinking when a quarter of it is left, so 8192 cut
+                # long thinking at ~6K tokens. 8192 is replaced as this script's old default; any other value is yours.
+                $maxOut = [Math]::Max(4096, [Math]::Min(32768, [int]($Tokens / 4)))
+                if ($null -eq $entry.maxTokens -or ($entry.maxTokens -eq 8192 -and $maxOut -ne 8192)) {
                     $entry | Add-Member -NotePropertyName maxTokens -NotePropertyValue $maxOut -Force
                     $changed = $true
                 }
@@ -403,6 +403,7 @@ if (-not $Folder -and [Threading.Thread]::CurrentThread.GetApartmentState() -ne 
         if ($PSBoundParameters.ContainsKey($k)) { $forward += @("-$k", "`"$($PSBoundParameters[$k])`"") }
     }
     if ($RestartStrata) { $forward += '-RestartStrata' }
+    if ($Plan) { $forward += '-Plan' }
     Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $forward
     exit
 }
@@ -443,5 +444,6 @@ Set-Location -LiteralPath $Folder
 $cline = Get-ClineCommand
 $clineArgs = @('-i', '-P', $Provider, '-m', $Model)
 if ($Thinking) { $clineArgs += @('--thinking', $Thinking) }
-Write-Host "Cline in $Folder  provider=$Provider  model=$Model  thinking=$Thinking"
+if ($Plan) { $clineArgs += '--plan' }
+Write-Host "Cline in $Folder  provider=$Provider  model=$Model  thinking=$Thinking  mode=$(if ($Plan) { 'plan' } else { 'act' })"
 & $cline @clineArgs

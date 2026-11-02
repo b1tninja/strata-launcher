@@ -9,7 +9,7 @@ catalog entry's figure. Select one to launch it, or several to benchmark them in
 
 | Tab | |
 | --- | --- |
-| **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve, [MTP drafting and its depth](#mtp-speculative-decoding) and more; your config files are never changed. **Remove model...** deletes a model's files and config ([details](setup.md#removing-models)). **Sessions** and **Open Cline** are here too (below). |
+| **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve, [MTP drafting and its depth](#mtp-speculative-decoding) and more; your config files are never changed. **Remove model...** deletes a model's files and config ([details](setup.md#removing-models)). **Sessions**, **Open Cline**, **Plan in Cline** and **Open VS Code** (with Continue) are here too (below). |
 | **Benchmark** | Runs Strata's `strata_bench.py` against one or several models in turn, starting and stopping their servers, with live output. |
 | **Results** | Every benchmark run as a table (its MTP setting and draft acceptance, decode and prompt speed, time to first token, cache hits); compare two side by side. |
 | **Models** | Strata's model catalog with download size, disk and RAM needs against this PC, colour-coded by fit. **Install with setup...** downloads one; **Remove...** deletes an installed one ([details](setup.md#removing-models)). The **archive** keeps models on another drive without installing them ([below](#the-model-archive)). |
@@ -102,13 +102,54 @@ it everywhere Cline reads it, every time.
   was told; raise **Headroom** if a version of Cline ever has a prompt refused as too long.
 - Cline re-imports its legacy `globalState.json` into `providers.json` at every start, so the limit is
   written to `models.json`, `providers.json` and `globalState.json` on every launch.
+- The model entry's reply cap (`maxTokens`) is set to 32,768 tokens (a quarter of a smaller context) when it has none or
+  still has the 8,192 used before: Strata counts thinking in the cap, so 8,192 cut long thinking at about 6K tokens. A
+  cap you set yourself is kept.
 - Those files are written as plain UTF-8: Windows PowerShell 5.1 adds a byte-order mark that Node's
   JSON parser rejects, and Cline then silently rebuilt its settings without any limit.
+
+### Thinking in Plan and Act
+
+Cline CLI 3 keeps one thinking level per session (`--thinking`): pressing Tab to switch between Plan and Act
+does not change it. Separate Plan and Act models and levels are a setting of Cline's VS Code extension
+("Use different models for Plan and Act", kept in `globalState.json`), which the CLI only reads when it migrates
+those settings. So the launcher opens two kinds of session:
+
+- **Open Cline** starts in Act mode with the **Thinking** level.
+- **Plan in Cline** starts in Plan mode (Cline's `--plan`) with the **Plan thinking** level (default `xhigh`).
+
+Strata passes `low` and `medium` to the model as they are; `high` and `xhigh` are both the model's top level.
+Measured on NVFP4 with 12 Python problems (checked on ~155 cases each): thinking off solved 11, low, medium and
+xhigh all solved 12; low took about twice off's time, xhigh 5.6x low's, with one problem thinking for 135 s. So
+`low` (or `medium`) suits acting and `xhigh` planning.
+
+### VS Code with Continue
+
+**Open VS Code** (Launch tab) uses the [Continue](https://github.com/continuedev/continue) extension, or a build of
+the [continued](https://github.com/b1tninja/continued) fork: its CI's `win32-x64-vsix` artifact
+(`gh run download <run> -R b1tninja/continued -n win32-x64-vsix`), or `npm run package` in its `extensions\vscode`.
+It:
+
+1. installs the package from **Extension VSIX** (a `.vsix`, or a folder: its newest `continue*.vsix`) when that
+   extension is missing or a different build, with `code --install-extension --force`. The extension and version are
+   read from the package: the fork is its own extension (`b1tninja.continued`), so it installs beside upstream's
+   (`continue.continue`) rather than over it. With both installed, the status line says so: disable one in VS Code,
+   as they add the same views and commands;
+2. writes `~/.continue/configs/strata.yaml`: a config named **Strata** with two entries for the selected model, a
+   **plan** entry with the **Plan thinking** level and an **act** entry with the **Thinking** level (sent as
+   `reasoning_effort` in each request), tool use on, the server's real context, and Qwen's thinking-mode sampling.
+   The reply cap (`maxTokens`) is 32,768 tokens (a quarter of a smaller context): Strata counts the thinking in it and
+   ends thinking when a quarter is left, so the 8,192 cap used before stopped `xhigh` plans at about 6K tokens;
+3. starts the server if it is not running, then opens VS Code in the project folder.
+
+Continue loads every YAML file in `~/.continue/configs` beside your own `config.yaml`, which the launcher never
+touches. In Continue, pick **Strata** in the configs dropdown, then the plan or act model. **Open Continue config**
+opens the file.
 
 `cline-strata.ps1` does this on its own too, for use without the window:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File cline-strata.ps1 [-Model <id>] [-StrataBase http://127.0.0.1:8080]
+powershell -ExecutionPolicy Bypass -File cline-strata.ps1 [-Model <id>] [-StrataBase http://127.0.0.1:8080] [-Thinking low] [-Plan]
 ```
 
 ## Sessions

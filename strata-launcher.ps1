@@ -109,6 +109,8 @@ $defaults = [ordered]@{
     ClineScript   = (Join-Path $PSScriptRoot 'cline-strata.ps1')
     ClineFolder   = [Environment]::GetFolderPath('UserProfile')
     Thinking      = ''
+    PlanThinking  = 'xhigh'
+    ContinueVsix  = ''
     Context       = ''
     ExtraArgs     = ''
     VramReserve   = ''
@@ -336,8 +338,34 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
                         ToolTip="Share of the context Cline is not told about (at least 4096 tokens). Cline compacts at 90% of what it is told, and counts characters / 3, which runs ~30% over Qwen's real count on code - so it compacts early anyway; it corrects an undercount by itself after each request. 2% keeps the most of the window; raise it only if a prompt is ever refused as too long."/>
               <Button x:Name="ClineBtn" Content="Open Cline" FontWeight="SemiBold"/>
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+              <TextBlock Width="110" Text="Plan thinking" Style="{StaticResource Label}"/>
+              <ComboBox x:Name="PlanThinkingBox" Width="200" Margin="0,0,16,0"
+                        ToolTip="The thinking level of a planning session. Cline CLI keeps one level per session (Tab to Act does not change it), so plan in a session started here and act in one from Open Cline."/>
+              <Button x:Name="PlanClineBtn" Content="Plan in Cline"
+                      ToolTip="Opens Cline in Plan mode (its --plan) with the Plan thinking level, on the same server and folder as Open Cline."/>
+            </StackPanel>
             <CheckBox x:Name="ResumeChk" Margin="110,6,0,0" Content="Resume the latest session first (when the model has one)"/>
             <TextBlock Style="{StaticResource Hint}" Text="Starts the selected server if it is not running, waits until the model is loaded, then opens Cline in the folder pointed at that server."/>
+            <Separator Margin="0,10"/>
+            <TextBlock Text="VS Code with Continue" FontWeight="SemiBold" Margin="0,0,0,6"/>
+            <Grid Margin="0,0,0,4">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Extension VSIX" Style="{StaticResource Label}"/>
+              <TextBox Grid.Column="1" x:Name="VsixBox"
+                       ToolTip="The Continue extension package to install: a .vsix file, or a folder (the newest continue-*.vsix in it is used). The continued fork builds one into extensions\vscode\build with npm run package."/>
+              <Button Grid.Column="2" x:Name="VsixBrowse" Content="Browse..." Margin="8,0,0,0"/>
+            </Grid>
+            <StackPanel Orientation="Horizontal" Margin="110,4,0,0">
+              <Button x:Name="VsCodeBtn" Content="Open VS Code" FontWeight="SemiBold" Margin="0,0,8,0"
+                      ToolTip="Installs the VSIX when Continue is missing or older, writes ~/.continue/configs/strata.yaml for the selected model (a plan entry with the Plan thinking level and an act entry with the Thinking level), starts the server if needed, then opens VS Code in the project folder."/>
+              <Button x:Name="ContinueCfgBtn" Content="Open Continue config"/>
+            </StackPanel>
+            <TextBlock x:Name="VsCodeHint" Style="{StaticResource Hint}" Text="In Continue, pick the &quot;Strata&quot; config in the configs dropdown, then the plan or act model."/>
           </StackPanel>
           </ScrollViewer>
         </TabItem>
@@ -1012,10 +1040,14 @@ function Stop-Row($Row) {
 
 function Stop-OllamaModels {
     if (-not $ui.OllamaChk.IsChecked) { return }
-    if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) { return }
-    $lines = & ollama ps 2>$null
-    foreach ($line in ($lines | Select-Object -Skip 1)) {
-        if ($line -match '^\s*(\S+)') { & ollama stop $Matches[1] 2>$null | Out-Null }
+    # Only a running Ollama, and over its HTTP API: the CLI starts the Ollama app when it is not running, and that app
+    # keeps the CLI's output pipe open, which froze this window until Ollama was closed.
+    if (-not (Get-Process -Name ollama -ErrorAction SilentlyContinue)) { return }
+    $api = 'http://127.0.0.1:11434/api'
+    try { $ps = Invoke-RestMethod "$api/ps" -TimeoutSec 3 } catch { return }
+    foreach ($m in @($ps.models)) {
+        $body = @{ model = $m.name; keep_alive = 0 } | ConvertTo-Json -Compress
+        try { Invoke-RestMethod -Method Post "$api/generate" -ContentType 'application/json' -Body $body -TimeoutSec 10 | Out-Null } catch {}
     }
 }
 
@@ -1200,7 +1232,8 @@ function Update-CtxHint {
     $ui.CtxHint.Text = $hint
 }
 
-function Start-Cline($Row) {
+function Start-Cline($Row, [switch]$Plan) {
+    # -Plan: Cline in Plan mode with the Plan thinking level (Cline CLI keeps one level per session).
     $launcher = Clean-Path $ui.ClineScriptBox.Text
     $folder = Clean-Path $ui.FolderBox.Text
     if (-not (Test-Path -LiteralPath $launcher)) {
@@ -1218,10 +1251,152 @@ function Start-Cline($Row) {
     }
     $clArgs = "-NoExit -STA -ExecutionPolicy Bypass -File $(QPath $launcher) -Folder $(QPath $folder) -Model `"$($Row.Model)`" " +
         "-StrataBase `"$(Get-BaseUrl $Row)`" -Context $raw -ReservePercent $ClineReservePercent -StrataRoot $(QPath (Get-Root))"
-    $thinking = [string]$ui.ThinkingBox.SelectedItem
+    $thinking = [string]$(if ($Plan) { $ui.PlanThinkingBox.SelectedItem } else { $ui.ThinkingBox.SelectedItem })
     if ($ThinkingLevels -contains $thinking) { $clArgs += " -Thinking $thinking" }
+    if ($Plan) { $clArgs += ' -Plan' }
     Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $clArgs -WorkingDirectory $folder
-    Set-Status ("Opened Cline in $folder on $($Row.Model): Cline's context {0:n0}, the server has {1:n0} tokens." -f (Get-ClineContext $raw), $raw)
+    Set-Status ("Opened Cline{0} in $folder on $($Row.Model): Cline's context {1:n0}, the server has {2:n0} tokens." -f $(if ($Plan) { ' (Plan mode)' } else { '' }), (Get-ClineContext $raw), $raw)
+}
+
+# ------------------------------------------------------------------------------------ VS Code + Continue
+# Continue (and the continued fork) loads every YAML file in ~/.continue/configs as a config of its own beside the
+# user's config.yaml, so the launcher keeps its models in one file there and never edits the user's.
+function Get-ContinueConfigPath { Join-Path $env:USERPROFILE '.continue\configs\strata.yaml' }
+
+function Get-CodeCommand {
+    $c = Get-Command code -ErrorAction SilentlyContinue
+    if ($c) { return $c.Source }
+    foreach ($p in "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd", "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd") {
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    return $null
+}
+
+function Get-ContinueVsix([string]$Path) {
+    # A .vsix, or the newest continue*.vsix in a folder (upstream's continue-*, the fork's continued-*).
+    # -> @{ Path; Id (publisher.name); Version }, both read from the package's manifest, or $null.
+    if (-not $Path) { return $null }
+    $f = if (Test-Path -LiteralPath $Path -PathType Leaf) { Get-Item -LiteralPath $Path }
+         elseif (Test-Path -LiteralPath $Path -PathType Container) {
+             Get-ChildItem -LiteralPath $Path -Filter 'continue*.vsix' -File | Sort-Object LastWriteTime | Select-Object -Last 1 }
+    if (-not $f) { return $null }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    try {
+        $zip = [IO.Compression.ZipFile]::OpenRead($f.FullName)
+        try {
+            $entry = $zip.GetEntry('extension.vsixmanifest')
+            $reader = New-Object IO.StreamReader($entry.Open())
+            try { $id = ([xml]$reader.ReadToEnd()).PackageManifest.Metadata.Identity } finally { $reader.Close() }
+        } finally { $zip.Dispose() }
+    } catch { return $null }
+    if (-not $id) { return $null }
+    return [pscustomobject]@{ Path = $f.FullName; Id = "$($id.Publisher).$($id.Id)"; Version = [string]$id.Version }
+}
+
+function Invoke-CodeCli([string]$Code, [string]$Arguments, [int]$TimeoutSec = 180) {
+    # VS Code's command line, its output through files: piped, a VS Code it starts would hold the pipe open, as
+    # Ollama's did. -> the output, or $null when it did not finish in time.
+    $out = [IO.Path]::GetTempFileName(); $err = [IO.Path]::GetTempFileName()
+    try {
+        $p = Start-Process -FilePath $Code -ArgumentList $Arguments -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) { return $null }
+        return ((Get-Content -LiteralPath $out, $err -Raw -ErrorAction SilentlyContinue) -join "`n")
+    } finally { Remove-Item -LiteralPath $out, $err -ErrorAction SilentlyContinue }
+}
+
+function Get-InstalledExtensions([string]$Code) {
+    # publisher.name (lower case) -> version, from code --list-extensions --show-versions.
+    $map = @{}
+    foreach ($line in ((Invoke-CodeCli $Code '--list-extensions --show-versions' 60) -split "`r?`n")) {
+        if ($line -match '^\s*([\w\-]+\.[\w\-]+)@(\S+)') { $map[$Matches[1].ToLower()] = $Matches[2] }
+    }
+    return $map
+}
+
+function Get-ContinueConfigText($Row, [int]$Context, [string]$PlanEffort, [string]$ActEffort) {
+    # Two entries for the same server: plan (more thinking) and act (less). Strata takes reasoning_effort in the request
+    # body (high and xhigh are the model's top level, none is no thinking); sampling is Qwen's for thinking mode.
+    # maxTokens counts the thinking too: Strata ends thinking when a quarter of it is left, so 8192 stopped xhigh plans at
+    # ~6K tokens. Continue keeps only min(1000, maxTokens) of the context free for the answer, so a big cap costs nothing.
+    $base = "$(Get-BaseUrl $Row)/v1"
+    $maxOut = [Math]::Max(4096, [Math]::Min(32768, [int]($Context / 4)))
+    $entry = {
+        param($label, $effort)
+        $lines = @(
+            "  - name: Strata $($Row.Model) - $label$(if ($effort) { " (thinking $effort)" })",
+            "    provider: openai",
+            "    model: $($Row.Model)",
+            "    apiBase: $base",
+            "    apiKey: strata",
+            "    roles: [chat, edit, apply, summarize]",
+            "    capabilities: [tool_use]",
+            "    defaultCompletionOptions:",
+            "      contextLength: $Context",
+            "      maxTokens: $maxOut",
+            "      temperature: 1.0",
+            "      topP: 0.95",
+            "      topK: 20")
+        if ($effort) {
+            $lines += @("    requestOptions:", "      extraBodyProperties:", "        reasoning_effort: $effort")
+        }
+        $lines -join "`n"
+    }
+    @(
+        '# Written by Strata Launcher (Open VS Code) for the selected model; rewritten on every launch.',
+        '# Your own ~/.continue/config.yaml is not touched. Pick "Strata" in Continue''s configs dropdown.',
+        'name: Strata',
+        'version: 1.0.0',
+        'schema: v1',
+        'models:',
+        (& $entry 'plan' $PlanEffort),
+        (& $entry 'act' $ActEffort)
+    ) -join "`n"
+}
+
+function Start-VsCode($Row) {
+    $code = Get-CodeCommand
+    if (-not $code) { Set-Status 'VS Code not found: install it (code.visualstudio.com), then try again.'; return }
+    $folder = Clean-Path $ui.FolderBox.Text
+    $raw = Get-RowContext $Row
+    if ($raw -le 0) { Set-Status "Cannot tell $($Row.Model)'s context; VS Code was not opened."; return }
+    # Continue: install the package when that extension is missing or a different build. The fork is its own
+    # extension (b1tninja.continued), so upstream's (continue.continue) is left alone, with a warning: both add the
+    # same views and commands.
+    $vsix = Get-ContinueVsix (Clean-Path $ui.VsixBox.Text)
+    $exts = Get-InstalledExtensions $code
+    $id = if ($vsix) { $vsix.Id.ToLower() } elseif ($exts['b1tninja.continued']) { 'b1tninja.continued' } else { 'continue.continue' }
+    $have = $exts[$id]
+    if ($vsix -and $have -ne $vsix.Version) {
+        Set-Status "Installing $($vsix.Id) $($vsix.Version) from $($vsix.Path)..."
+        $window.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)   # show it first
+        $out = Invoke-CodeCli $code "--install-extension $(QPath $vsix.Path) --force"
+        $have = (Get-InstalledExtensions $code)[$id]
+        if (-not $have) { [System.Windows.MessageBox]::Show("$($vsix.Id) did not install:`n`n$out", 'Strata') | Out-Null; return }
+    } elseif (-not $have) {
+        Set-Status 'Continue is not installed and no VSIX was found: build one (npm run package in the fork''s extensions\vscode) or pick a .vsix.'
+        return
+    }
+    $other = @('continue.continue', 'b1tninja.continued') | Where-Object { $_ -ne $id -and $exts[$_] }
+    $eff = { param($v) if ($ThinkingLevels -contains $v) { $v } else { '' } }
+    $text = Get-ContinueConfigText $Row $raw (& $eff ([string]$ui.PlanThinkingBox.SelectedItem)) (& $eff ([string]$ui.ThinkingBox.SelectedItem))
+    $cfg = Get-ContinueConfigPath
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cfg) | Out-Null
+    [IO.File]::WriteAllText($cfg, $text + "`n", (New-Object Text.UTF8Encoding $false))
+    Start-Process -FilePath $code -ArgumentList (QPath $folder) -WindowStyle Hidden
+    $warn = if ($other) { " $($other -join ', ') is installed too: disable it in VS Code, they clash." } else { '' }
+    Set-Status ("Opened VS Code in $folder with $id $have; {0} points at $($Row.Model) ({1:n0} tokens).$warn" -f $cfg, $raw)
+}
+
+function Open-VsCode {
+    $row = Get-Selected
+    if (-not $row) { return }
+    $folder = Clean-Path $ui.FolderBox.Text
+    if (-not (Test-Path -LiteralPath $folder -PathType Container)) { [System.Windows.MessageBox]::Show('Choose a project folder.', 'Strata') | Out-Null; return }
+    if (Test-RowReady $row) { Start-VsCode $row; return }
+    if (-not (Start-Server $row)) { return }
+    $script:clinePending = @{ Row = $row; T0 = Get-Date; Target = 'vscode' }
+    Set-Status "VS Code opens once $($row.Model) has loaded..."
 }
 
 # ------------------------------------------------------------------------------------ benchmark
@@ -3702,6 +3877,7 @@ $ui.SetupRootBox.Text = $(if ($foundRoot) { $foundRoot } elseif ($firstChoice) {
 $ui.RootBox.Text = $ui.SetupRootBox.Text   # never empty: everything joins paths onto it
 $ui.FolderBox.Text = $settings.ClineFolder
 $ui.ClineScriptBox.Text = $settings.ClineScript
+$ui.VsixBox.Text = $settings.ContinueVsix
 $ui.ExtraBox.Text = $settings.ExtraArgs
 $ui.VramBox.Text = $settings.VramReserve
 $ui.FitChk.IsChecked = [bool]$settings.FitMaxTokens
@@ -3739,6 +3915,8 @@ foreach ($v in @('(config)', '32768', '65536', '131072', '204800', '262144', '39
 $ui.CtxBox.Text = $(if ($settings.Context) { $settings.Context } else { '(config)' })
 foreach ($v in @('(default)') + $ThinkingLevels) { [void]$ui.ThinkingBox.Items.Add($v) }
 $ui.ThinkingBox.SelectedItem = $(if ($ThinkingLevels -contains $settings.Thinking) { $settings.Thinking } else { '(default)' })
+foreach ($v in @('(default)') + $ThinkingLevels) { [void]$ui.PlanThinkingBox.Items.Add($v) }
+$ui.PlanThinkingBox.SelectedItem = $(if ($ThinkingLevels -contains $settings.PlanThinking) { $settings.PlanThinking } else { '(default)' })
 foreach ($v in 1..5) { [void]$ui.RunsBox.Items.Add([string]$v) }
 $ui.RunsBox.SelectedItem = [string]$settings.Runs
 if (-not $ui.RunsBox.SelectedItem) { $ui.RunsBox.SelectedItem = '3' }
@@ -3769,6 +3947,17 @@ $ui.ClineScriptBrowse.Add_Click({
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
     $dialog.Filter = 'PowerShell scripts (*.ps1)|*.ps1'
     if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $ui.ClineScriptBox.Text = $dialog.FileName }
+})
+$ui.VsixBrowse.Add_Click({
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Filter = 'VS Code extension (*.vsix)|*.vsix'
+    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $ui.VsixBox.Text = $dialog.FileName }
+})
+$ui.VsCodeBtn.Add_Click({ Open-VsCode })
+$ui.ContinueCfgBtn.Add_Click({
+    $f = Get-ContinueConfigPath
+    if (Test-Path -LiteralPath $f) { Start-Process -FilePath (Get-CodeCommand) -ArgumentList (QPath $f) -WindowStyle Hidden }
+    else { Set-Status "No $f yet: Open VS Code writes it." }
 })
 
 $ui.StartBtn.Add_Click({
@@ -3810,22 +3999,25 @@ $ui.RemoveModelBtn.Add_Click({
     $row = Get-Selected
     if ($row) { Remove-Model $row }
 })
-$ui.ClineBtn.Add_Click({
+function Open-Cline([switch]$Plan) {
+    # Open Cline / Plan in Cline: start the server if needed, then Cline (Start-Cline) once the model has loaded.
     $row = Get-Selected
     if (-not $row) { return }
     $launcher = Clean-Path $ui.ClineScriptBox.Text
     $folder = Clean-Path $ui.FolderBox.Text
     if (-not (Test-Path -LiteralPath $launcher)) { [System.Windows.MessageBox]::Show("Launcher script not found: $launcher", 'Strata') | Out-Null; return }
     if (-not (Test-Path -LiteralPath $folder -PathType Container)) { [System.Windows.MessageBox]::Show('Choose a project folder.', 'Strata') | Out-Null; return }
-    if ($ui.ResumeChk.IsChecked -and (Get-SessionDir $row) -and (Test-Path -LiteralPath (Join-Path (Get-SessionDir $row) (Get-LatestSessionName $row)))) {
+    if (-not $Plan -and $ui.ResumeChk.IsChecked -and (Get-SessionDir $row) -and (Test-Path -LiteralPath (Join-Path (Get-SessionDir $row) (Get-LatestSessionName $row)))) {
         [void](Start-Resume $row -Cline)
         return
     }
-    if (Test-RowReady $row) { Start-Cline $row; return }
+    if (Test-RowReady $row) { Start-Cline $row -Plan:$Plan; return }
     if (-not (Start-Server $row)) { return }
-    $script:clinePending = @{ Row = $row; T0 = Get-Date }
+    $script:clinePending = @{ Row = $row; T0 = Get-Date; Plan = [bool]$Plan }
     Set-Status "Cline opens once $($row.Model) has loaded..."
-})
+}
+$ui.ClineBtn.Add_Click({ Open-Cline })
+$ui.PlanClineBtn.Add_Click({ Open-Cline -Plan })
 
 $ui.BenchBtn.Add_Click({ Start-BenchQueue })
 $ui.CancelBtn.Add_Click({ Stop-Bench })
@@ -4011,8 +4203,10 @@ $timer.Add_Tick({
             $row = $script:clinePending.Row
             Request-LoadIfIdle $row
             if (Test-RowReady $row) {
+                $plan = [bool]$script:clinePending.Plan
+                $target = $script:clinePending.Target
                 $script:clinePending = $null
-                Start-Cline $row
+                if ($target -eq 'vscode') { Start-VsCode $row } else { Start-Cline $row -Plan:$plan }
             } elseif (((Get-Date) - $script:clinePending.T0).TotalMinutes -gt $LoadTimeoutMinutes) {
                 $script:clinePending = $null
                 Set-Status "$($row.Model) did not load in time; Cline was not opened."
@@ -4047,6 +4241,8 @@ $window.Add_Closing({
         ClineScript  = Clean-Path $ui.ClineScriptBox.Text
         ClineFolder  = Clean-Path $ui.FolderBox.Text
         Thinking     = [string]$ui.ThinkingBox.SelectedItem
+        PlanThinking = [string]$ui.PlanThinkingBox.SelectedItem
+        ContinueVsix = Clean-Path $ui.VsixBox.Text
         Context      = $(if ($ui.CtxBox.Text -eq '(config)') { '' } else { $ui.CtxBox.Text })
         ExtraArgs    = $ui.ExtraBox.Text
         VramReserve  = $ui.VramBox.Text

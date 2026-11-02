@@ -179,7 +179,16 @@ try {
     $e = $m.providers.'openai-compatible'.models.'qwen-test'
     Assert-Is $e.contextWindow 126976 'an existing entry gets the server context (was stuck at 262144)'
     Assert-Is $e.maxInputTokens 126976 'maxInputTokens follows'
-    Assert-Is $e.maxTokens 8192 'maxTokens filled in (min of 8192 and a quarter)'
+    Assert-Is $e.maxTokens 31744 'maxTokens filled in (a quarter of the context, at most 32768)'
+    $mPath = Join-Path $settings 'models.json'
+    foreach ($case in @(@(8192, 31744, 'the old 8192 default is raised'), @(12000, 12000, 'a cap of your own is kept'))) {
+        $j = Get-Content -LiteralPath $mPath -Raw | ConvertFrom-Json
+        $j.providers.'openai-compatible'.models.'qwen-test'.maxTokens = $case[0]
+        [IO.File]::WriteAllText($mPath, ($j | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding $false))
+        [void](Ensure-ClineStrataAuth -ModelId 'qwen-test' -Tokens 126976)
+        Assert-Is (Get-Content -LiteralPath $mPath -Raw | ConvertFrom-Json).providers.'openai-compatible'.models.'qwen-test'.maxTokens $case[1] $case[2]
+    }
+    $m = Get-Content -LiteralPath $mPath -Raw | ConvertFrom-Json
     Assert-Is $m.providers.'openai-compatible'.provider.baseUrl 'http://127.0.0.1:8080/v1' 'base URL points at this server'
     # Cline's JSON.parse rejects a byte-order mark and then rebuilds the provider without contextWindow,
     # which turns its automatic compaction off: both files must be plain UTF-8.
@@ -256,6 +265,42 @@ try {
     '{"short":"2x48@6000, 5.0 x8/16","summary":"RAM 2x48 GB @ 6000"}' | Set-Content -LiteralPath (Join-Path $tmp 'launcher-pc.json') -Encoding ASCII
     Assert-Is (Read-BenchPc $tmp $old).Short '2x48@6000, 5.0 x8/16' 'launcher-pc.json wins'
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+
+# ---------------------------------------------------------------- VS Code + Continue
+Invoke-Expression (Get-FunctionText $gui @('Get-BaseUrl', 'Get-ContinueConfigText', 'Get-ContinueVsix'))
+Write-Host '--- Continue config and VSIX'
+$crow = [pscustomobject]@{ Model = 'qwen3.8-flash-next-nvfp4-nvfp4'; Port = 8083 }
+$ctext = Get-ContinueConfigText $crow 524288 'xhigh' 'low'
+Assert-Is (@($ctext -split "`n" | Where-Object { $_ -match '^  - name: Strata qwen3\.8-flash-next-nvfp4-nvfp4 - (plan|act)' }).Count) 2 'a plan and an act entry'
+Assert-Is ($ctext -match 'reasoning_effort: xhigh' -and $ctext -match 'reasoning_effort: low') $true 'each entry carries its thinking level'
+Assert-Is ($ctext -match 'apiBase: http://127\.0\.0\.1:8083/v1' -and $ctext -match 'contextLength: 524288' -and $ctext -match 'capabilities: \[tool_use\]') $true 'endpoint, context and tool use'
+Assert-Is ($ctext -match 'maxTokens: 32768') $true 'answer cap with room for xhigh thinking'
+Assert-Is ((Get-ContinueConfigText $crow 65536 '' 'low') -match 'maxTokens: 16384') $true 'a quarter of a small context'
+Assert-Is ((Get-ContinueConfigText $crow 1000 '' 'low') -match '(?s)- plan\s*\n.*?\n  - name') $true 'no level: no thinking suffix and no requestOptions'
+Assert-Is ($ctext -match '[^\x00-\x7F]') $false 'plain ASCII'
+$vdir = Join-Path $env:TEMP "vsix-test-$PID"; New-Item -ItemType Directory -Force $vdir | Out-Null
+try {
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $newVsix = {
+        param($name, $publisher, $id, $version)
+        $zip = [IO.Compression.ZipFile]::Open((Join-Path $vdir $name), 'Create')
+        try {
+            $w = New-Object IO.StreamWriter($zip.CreateEntry('extension.vsixmanifest').Open())
+            $w.Write("<PackageManifest Version=`"2.0.0`" xmlns=`"http://schemas.microsoft.com/developer/vsx-schema/2011`"><Metadata>" +
+                "<Identity Language=`"en-US`" Id=`"$id`" Version=`"$version`" Publisher=`"$publisher`"/></Metadata></PackageManifest>")
+            $w.Close()
+        } finally { $zip.Dispose() }
+    }
+    & $newVsix 'continue-1.3.40.vsix' 'Continue' 'continue' '1.3.40'
+    Start-Sleep -Milliseconds 50
+    & $newVsix 'continued-win32-x64-1.3.40-3e4599d.vsix' 'b1tninja' 'continued' '1.3.40-3e4599d'
+    Set-Content -LiteralPath (Join-Path $vdir 'other.vsix') -Value 'x'
+    $v = Get-ContinueVsix $vdir
+    Assert-Is "$($v.Id) $($v.Version)" 'b1tninja.continued 1.3.40-3e4599d' 'a folder: the newest continue*.vsix, id and version from its manifest'
+    Assert-Is (Get-ContinueVsix (Join-Path $vdir 'continue-1.3.40.vsix')).Id 'Continue.continue' 'a file: that file'
+    Assert-Is (Get-ContinueVsix (Join-Path $vdir 'other.vsix')) $null 'not a package'
+    Assert-Is (Get-ContinueVsix (Join-Path $vdir 'missing')) $null 'nothing there'
+} finally { Remove-Item -LiteralPath $vdir -Recurse -Force -ErrorAction SilentlyContinue }
 
 if ($fails) { "`n$fails FAILED"; exit 1 }
 "`nall good"
