@@ -205,7 +205,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
           <GridView>
             <GridViewColumn Header="Config" Width="190" DisplayMemberBinding="{Binding File}"/>
             <GridViewColumn Header="Model" Width="260" DisplayMemberBinding="{Binding Model}"/>
-            <GridViewColumn Header="Quant" Width="80" DisplayMemberBinding="{Binding Quant}"/>
+            <GridViewColumn Header="Quant" Width="125" DisplayMemberBinding="{Binding Quant}"/>
             <GridViewColumn Width="70" DisplayMemberBinding="{Binding Disk}">
               <GridViewColumn.Header><TextBlock Text="Disk GB" ToolTip="What the model's files take on disk (Strata's own count), with the files it shares with other models, such as the MTP draft layer. Remove model frees the part that is its alone."/></GridViewColumn.Header>
             </GridViewColumn>
@@ -482,6 +482,9 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
                 <GridView>
                   <GridViewColumn Header="Family" Width="200" DisplayMemberBinding="{Binding Title}"/>
                   <GridViewColumn Header="Quant" Width="95" DisplayMemberBinding="{Binding Quant}"/>
+                  <GridViewColumn Width="95" DisplayMemberBinding="{Binding Uncensor}">
+                    <GridViewColumn.Header><TextBlock Text="Uncensor" ToolTip="optional: once installed, the Config tab's Uncensored variant... can make a copy of its config with a control vector that stops the model declining requests (downloaded from sergqwer/strata-nvfp4 and checked; not included, off unless you make it). licence: NVIDIA's weights, whose licence does not allow it."/></GridViewColumn.Header>
+                  </GridViewColumn>
                   <GridViewColumn Header="Download GB" Width="85" DisplayMemberBinding="{Binding Download}"/>
                   <GridViewColumn Header="Disk need GB" Width="85" DisplayMemberBinding="{Binding Disk}"/>
                   <GridViewColumn Header="RAM need GB" Width="85" DisplayMemberBinding="{Binding Ram}"/>
@@ -550,6 +553,8 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
                 <Button x:Name="CfgSaveBtn" Content="Save" FontWeight="SemiBold"/>
                 <Button x:Name="CfgRevertBtn" Content="Revert"/>
                 <Button x:Name="CfgSaveAsBtn" Content="Save as new..."/>
+                <Button x:Name="CfgUncensorBtn" Content="Uncensored variant..."
+                        ToolTip="A copy of this config with a control vector that stops the model declining requests (NVFP4 GPTQ pack only; downloaded and checked, not included)"/>
                 <Button x:Name="CfgFileBtn" Content="Open file"/>
                 <Button x:Name="CfgFolderBtn" Content="Open folder" Margin="0"/>
               </WrapPanel>
@@ -790,6 +795,22 @@ function Get-QuantLabel($Cfg) {
     return '-'
 }
 
+function Get-VectorTag($Cfg) {
+    # 'uncensored' for a config that runs a refusal-removing control vector (the uncensor vector, or Strata's own
+    # experimental speed projection, which is one too), 'control vector' for any other, '' for none.
+    $v = @(Get-ArgValue $Cfg.args '--control-vector-scaled') + @(Get-ArgValue $Cfg.args '--control-vector') | Where-Object { $_ }
+    if (-not $v) { return '' }
+    if ((@($v | ForEach-Object { Split-Path ($_ -replace ':[\d.]+$', '') -Leaf }) -join '|') -match '(?i)uncensor|refusal|speed-projection') { return 'uncensored' }
+    return 'control vector'
+}
+
+function Get-UncensorCatalogMark($M) {
+    # The Models tab's Uncensor column: the same rule as Get-UncensorRefusal, from the catalog's repository and licence.
+    if ("$($M.repo) $($M.license)" -match '(?i)nvidia') { return 'licence' }
+    if ($M.repo -match '(?i)NVFP4-GPTQ') { return 'optional' }
+    return ''
+}
+
 function Format-Tokens($Value) {
     if (-not $Value) { return '-' }
     $n = [int64]$Value
@@ -846,7 +867,7 @@ function Read-Configs {
             File    = $f.Name
             Path    = $f.FullName
             Model   = if ($cfg.model_name) { [string]$cfg.model_name } else { $f.BaseName }
-            Quant   = Get-QuantLabel $cfg
+            Quant   = (@((Get-QuantLabel $cfg), (Get-VectorTag $cfg)) | Where-Object { $_ }) -join ', '
             Context = Format-Tokens (Get-ArgValue $cfg.args '--max-context')
             Kv      = if ($kv) { $kv } else { '-' }
             Disk    = ''   # Update-ConfigSizes fills these in once the list is up
@@ -2728,8 +2749,9 @@ function Show-TextWindow([string]$Path, [string]$Title) {
 # one moved into place whole). Engine flags with a control are curated from `strata.exe --help`;
 # every other argument stays as it is in the Other arguments table.
 $ConfigPy = @'
-import json, sys
+import json, os, sys
 sys.path.insert(0, sys.argv[2])
+sys.path.insert(1, os.path.dirname(os.path.abspath(sys.argv[2])))   # runconfig imports strata_control from the Strata folder
 import runconfig as R
 if sys.argv[1] == "schema":
     out = []
@@ -2819,14 +2841,20 @@ function Get-ConfigSchema {
     return $script:cfgSchema
 }
 
+function Get-ArgValueCount([string]$Flag) {
+    # Engine flags that take more than one value; their values are kept together, space-separated.
+    switch ($Flag) { '--control-vector-layer-range' { 2 } default { 1 } }
+}
+
 function Split-ArgEntries($ArgList) {
     # args as [flag, value-or-$null] pairs: a token after a flag is its value unless it is a flag itself.
     $out = New-Object System.Collections.Generic.List[object]
     $a = @($ArgList | ForEach-Object { [string]$_ })
     for ($i = 0; $i -lt $a.Count; $i++) {
-        $value = $null
-        if ($i + 1 -lt $a.Count -and -not $a[$i + 1].StartsWith('--')) { $value = $a[$i + 1]; $i++ }
-        $out.Add([pscustomobject]@{ Flag = $a[$i - [int]($null -ne $value)]; Value = $value })
+        $flag = $a[$i]
+        $vals = New-Object System.Collections.Generic.List[string]
+        while ($vals.Count -lt (Get-ArgValueCount $flag) -and $i + 1 -lt $a.Count -and -not $a[$i + 1].StartsWith('--')) { $vals.Add($a[$i + 1]); $i++ }
+        $out.Add([pscustomobject]@{ Flag = $flag; Value = $(if ($vals.Count) { $vals -join ' ' } else { $null }) })
     }
     return , $out
 }
@@ -3122,7 +3150,8 @@ function Build-Config {
         if (-not $flag.StartsWith('--')) { $errors.Add("Other arguments: '$flag' is not a flag (they start with --)"); continue }
         $argOut.Add($flag)
         $val = ([string]$r.Value).Trim()
-        if ($val) { $argOut.Add($val) }
+        if ($val -and (Get-ArgValueCount $flag) -gt 1) { foreach ($t in ($val -split '\s+')) { $argOut.Add($t) } }
+        elseif ($val) { $argOut.Add($val) }
     }
     $new.args = $argOut.ToArray()
     # The same guards Strata keeps: no network exposure without a key, no lazy load with images.
@@ -3281,6 +3310,120 @@ function Save-ConfigAs {
     if ($row) { $ui.ConfigList.SelectedItem = $row; Open-ConfigEditor $row -Force }
     Update-ServicePicker
     Set-Status "Created $(Split-Path $path -Leaf)."
+}
+
+# ------------------------------------------------------------------------------------ uncensored variant
+# A control vector that stops Qwen3.8-Flash-Next declining requests, published by another Strata fork
+# (sergqwer/strata-nvfp4, MIT). Neither this launcher nor Strata ships it: it is downloaded from a pinned commit into
+# the data folder and checked against these sums, and a file that does not match is deleted, never used.
+$UncensorSource = 'https://raw.githubusercontent.com/sergqwer/strata-nvfp4/a1ad595440468ededd8b87cf46a6906310930170/data/uncensor'
+$UncensorFiles = [ordered]@{
+    'qwen-nvfp4-gptq-uncensored.gguf' = 'a2ec3e999724022a55d48d30822bd10b1b25916ccc221013a119a674d06a46b5'
+    'qwen-nvfp4-gptq-uncensored.json' = '83858b5db79b78e8790fc9e0c05bf7ae2681640b1248372dffda517a038d89c1'
+    'README.md'                       = '7fb4156ba62d9c6d49faa826b5300e9992c2e3e88f947fe839f90163d754a273'
+}
+$UncensorVector = 'qwen-nvfp4-gptq-uncensored.gguf'
+
+function Get-UncensorRefusal($Cfg) {
+    # '' when the vector may be used with this config, else why not. It was made and measured on the NVFP4 GPTQ pack
+    # (Qwen's weights, Qwen licence); NVIDIA's NVFP4 and FP4-Local are under a licence that forbids bypassing the
+    # model's safety guardrails.
+    $files = (@('--pack', '--native', '--native-dense-gguf') | ForEach-Object { Get-ArgValue $Cfg.args $_ } | Where-Object { $_ }) -join '|'
+    if ($files -match '(?i)nvidia|FP4-Local') { return "This config runs NVIDIA's NVFP4 model, whose licence does not allow bypassing the model's safety guardrails." }
+    if ($files -match '(?i)NVFP4-GPTQ') { return '' }
+    if ($files -match '(?i)uncensored|orca') { return 'This model is uncensored already.' }
+    return 'The vector was made and measured on the NVFP4 GPTQ pack (Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata) only; this config runs other weights.'
+}
+
+function New-UncensorVariant($Cfg, [string]$File, [string]$VectorPath, [int[]]$UsedPorts, $Existing) {
+    # The variant of config $File (strata-<name>.json): strata-<name>-uncensored.json with its own model_name, port and
+    # log, and the vector's arguments in place of any control vector the original had. Built from a variant, it is that
+    # variant again. $Existing is the variant's current config, whose port is kept.
+    $base = [IO.Path]::GetFileNameWithoutExtension($File) -replace '^strata-', '' -replace '-uncensored$', ''
+    $out = $Cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $takes = @{ '--control-vector' = 1; '--control-vector-scaled' = 1; '--control-vector-layer-range' = 2; '--cvec-mode' = 1; '--cvec-dir' = 1 }
+    $kept = New-Object System.Collections.Generic.List[string]
+    $a = @($Cfg.args)
+    for ($i = 0; $i -lt $a.Count; $i++) {
+        if ($takes.ContainsKey([string]$a[$i])) { $i += $takes[[string]$a[$i]]; continue }
+        $kept.Add([string]$a[$i])
+    }
+    $kept.AddRange([string[]]@('--control-vector-scaled', "${VectorPath}:1.0", '--control-vector-layer-range', '8', '33',
+        '--cvec-mode', 'project', '--cvec-dir', 'per-layer'))
+    $out.args = $kept.ToArray()
+    $model = if ($Cfg.model_name) { [string]$Cfg.model_name } else { $base }
+    $out | Add-Member -NotePropertyName model_name -NotePropertyValue (($model -replace '-uncensored$', '') + '-uncensored') -Force
+    $port = if ($Existing -and $Existing.port) { [int]$Existing.port } else {
+        $p = $(if ($Cfg.port) { [int]$Cfg.port } else { 8080 }) + 1
+        while ($UsedPorts -contains $p) { $p++ }
+        $p
+    }
+    $out | Add-Member -NotePropertyName port -NotePropertyValue $port -Force
+    if ($Cfg.log) { $out.log = Join-Path (Split-Path ([string]$Cfg.log)) "strata-$base-uncensored.log" }
+    return @{ File = "strata-$base-uncensored.json"; Cfg = $out }
+}
+
+function Get-UncensorFiles([string]$Dir) {
+    # Downloads what is missing or does not match into $Dir; returns '' or what went wrong.
+    if (-not (Test-Path -LiteralPath $Dir)) { New-Item -ItemType Directory -Path $Dir -Force | Out-Null }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    foreach ($name in $UncensorFiles.Keys) {
+        $path = Join-Path $Dir $name
+        if ((Test-Path -LiteralPath $path) -and (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $UncensorFiles[$name]) { continue }
+        $part = "$path.part"
+        try {
+            Invoke-WebRequest -UseBasicParsing "$UncensorSource/$name" -OutFile $part -TimeoutSec 60
+        } catch {
+            Remove-Item -LiteralPath $part -ErrorAction SilentlyContinue
+            return "Could not download $name from $UncensorSource ($($_.Exception.Message))."
+        }
+        if ((Get-FileHash -LiteralPath $part -Algorithm SHA256).Hash -ne $UncensorFiles[$name]) {
+            Remove-Item -LiteralPath $part -ErrorAction SilentlyContinue
+            return "$name from $UncensorSource does not match its SHA-256 sum, so it was deleted and not used."
+        }
+        Move-Item -LiteralPath $part -Destination $path -Force
+    }
+    return ''
+}
+
+function Save-UncensorVariant {
+    $ed = $script:cfgEdit
+    if (-not $ed) { [System.Windows.MessageBox]::Show('Open a model''s config first.', 'Strata') | Out-Null; return }
+    # Made from the file as saved, not the form.
+    try { $cfg = Get-Content -LiteralPath $ed.Row.Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
+        [System.Windows.MessageBox]::Show("Could not read $($ed.Row.Path)`n`n$($_.Exception.Message)", 'Strata') | Out-Null; return
+    }
+    $why = Get-UncensorRefusal $cfg
+    if ($why) { [System.Windows.MessageBox]::Show("No uncensored variant for $($ed.Row.File).`n`n$why", 'Strata') | Out-Null; return }
+    $data = Clean-Path $ui.DataBox.Text
+    if (-not $data) { [System.Windows.MessageBox]::Show('Set the data folder (Launch tab) first: the vector is kept there.', 'Strata') | Out-Null; return }
+    $dir = Join-Path $data 'uncensor'
+    $target = Join-Path (Get-Root) ((New-UncensorVariant $cfg $ed.Row.File '' @() $null).File)
+    $existing = if (Test-Path -LiteralPath $target) { try { Get-Content -LiteralPath $target -Raw | ConvertFrom-Json } catch { $null } }
+    $used = @($script:configs | Where-Object { $_.Path -ne $target } | ForEach-Object { [int]$_.Port })
+    $v = New-UncensorVariant $cfg $ed.Row.File (Join-Path $dir $UncensorVector) $used $existing
+    $self = $v.File -eq $ed.Row.File
+    $msg = $(if ($self) { "Rebuild $($v.File)?" } else { "Make $($v.File) from $($ed.Row.File) as saved?" }) + "`n`n" +
+        "It runs the model with a control vector that stops it declining requests. The vector is not part of Strata or " +
+        "this launcher: it is downloaded (268 KB) from another Strata fork, sergqwer/strata-nvfp4 (MIT), at a pinned " +
+        "commit, into $dir, and checked against its SHA-256 sum. Its README there says how it was made and what it changes.`n`n" +
+        "It runs as $($v.Cfg.model_name) on port $($v.Cfg.port)." +
+        $(if ($self) { " Its arguments are kept, with the vector's set again; the current file is kept as .bak." }
+          elseif ($existing) { " $($v.File) exists and is rebuilt from $($ed.Row.File) (its port stays; the old one is kept as .bak). $($ed.Row.File) is not changed." }
+          else { " $($ed.Row.File) is not changed." }) +
+        "`n`nWith it on, what the model writes is your responsibility."
+    if ([System.Windows.MessageBox]::Show($msg, 'Strata: uncensored variant', 'YesNo') -ne 'Yes') { return }
+    Set-Status "Downloading the uncensor vector into $dir..."
+    $window.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
+    $err = Get-UncensorFiles $dir
+    if ($err) { Set-Status $err; [System.Windows.MessageBox]::Show("$err`n`nNo config was written.", 'Strata') | Out-Null; return }
+    if (-not (Write-ConfigFile $target $v.Cfg)) { return }
+    Read-Configs
+    Update-ServicePicker
+    $row = $script:configs | Where-Object { $_.Path -eq $target } | Select-Object -First 1
+    if ($row) { $ui.ConfigList.SelectedItem = $row; Open-ConfigEditor $row -Force }
+    Set-Status ("$(if ($existing) { 'Rebuilt' } else { 'Created' }) $($v.File) ($($v.Cfg.model_name), port $($v.Cfg.port)); the vector is in $dir." +
+        $(if ($row -and (Test-RowRunning $row)) { ' Restart its server to use it.' }))
 }
 
 # ------------------------------------------------------------------------------------ PC hardware
@@ -3682,6 +3825,7 @@ for fam, fd in S.FAMILIES.items():
                               "about": m.get("about", ""), "family_about": fd.get("about", ""),
                               "download_gb": m.get("download_gb"), "ram_gb": m.get("ram_gb"), "arena_gb": m.get("arena_gb"),
                               "budget": bool(m.get("budget")), "nvidia_only": bool(m.get("nvidia_only")),
+                              "repo": m.get("repo", ""), "license": m.get("license", ""),
                               "vision": bool(m.get("vision", fd.get("vision"))), "own_path": False})
 for fam, fd in getattr(S, "OWN_PATH_FAMILIES", {}).items():
     for q, m in fd.get("models", {}).items():
@@ -3781,6 +3925,7 @@ function Update-CatalogFit {
             Title     = $m.title
             Family    = $m.family
             Quant     = $m.quant
+            Uncensor  = Get-UncensorCatalogMark $m
             Download  = '{0:n1}' -f [double]$m.download_gb
             Disk      = '{0:n0}' -f $need
             Ram       = Get-CatalogRamText $m $cat
@@ -4087,6 +4232,7 @@ $ui.CatRemoveBtn.Add_Click({
 $ui.CfgSaveBtn.Add_Click({ Save-ConfigEditor })
 $ui.CfgRevertBtn.Add_Click({ if ($script:cfgEdit) { Open-ConfigEditor $script:cfgEdit.Row -Force } })
 $ui.CfgSaveAsBtn.Add_Click({ Save-ConfigAs })
+$ui.CfgUncensorBtn.Add_Click({ Save-UncensorVariant })
 $ui.CfgFileBtn.Add_Click({ if ($script:cfgEdit) { Open-External $script:cfgEdit.Row.Path } })
 $ui.CfgFolderBtn.Add_Click({ if ($script:cfgEdit) { Start-Process explorer.exe -ArgumentList "/select,$(QPath $script:cfgEdit.Row.Path)" } })
 $ui.CfgArgAddBtn.Add_Click({

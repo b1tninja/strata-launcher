@@ -14,7 +14,7 @@ catalog entry's figure. Select one to launch it, or several to benchmark them in
 | **Results** | Every benchmark run as a table (its MTP setting and draft acceptance, decode and prompt speed, time to first token, cache hits); compare two side by side. |
 | **Models** | Strata's model catalog with download size, disk and RAM needs against this PC, colour-coded by fit. **Install with setup...** downloads one; **Remove...** deletes an installed one ([details](setup.md#removing-models)). The **archive** keeps models on another drive without installing them ([below](#the-model-archive)). |
 | **Service** | Runs one model on demand in the background: the server starts without loading the model, the first request loads it, and it unloads after an idle time so the graphics card is free. Optionally saves the conversation before unloading. |
-| **Config** | A full editor for a model's `strata-*.json`: server settings (from Strata's own settings schema), engine options with explanations, model files, other engine arguments, and the raw JSON. Changes are listed and checked before saving, and the previous file is kept as `.bak`. **Save as new** makes a variant. |
+| **Config** | A full editor for a model's `strata-*.json`: server settings (from Strata's own settings schema), engine options with explanations, model files, other engine arguments, and the raw JSON. Changes are listed and checked before saving, and the previous file is kept as `.bak`. **Save as new** makes a variant; **Uncensored variant...** makes one with an optional control vector ([below](#an-uncensored-variant-optional-not-included)). |
 | **Setup** | Everything a new PC needs, and the place to update Strata. See [Setting up a PC](setup.md). |
 | **PC** | What sets Strata's speed on this PC, with what to do about it ([below](#the-pc-tab)). |
 
@@ -156,14 +156,21 @@ powershell -ExecutionPolicy Bypass -File cline-strata.ps1 [-Model <id>] [-Strata
 
 Neither this launcher nor Strata ships one. Another Strata fork, [sergqwer/strata-nvfp4](https://github.com/sergqwer/strata-nvfp4)
 (MIT), publishes a control vector that stops Qwen3.8-Flash-Next from declining requests: `data/uncensor/` there, with its
-README (how it was made, what it does to quality, licence) and a JSON of its scores. It is for Qwen-licensed weights only:
-the NVFP4 GPTQ pack (`Maximilian228--Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata`) it was built on, and per its README the
-`qwen` and Unsloth GGUFs. Never use it with NVIDIA's NVFP4 model: its licence does not allow bypassing the model's
-safety guardrails. With it on, what the model writes is your responsibility.
+README (how it was made, what it does to quality, licence) and a JSON of its scores. With it on, what the model writes is
+your responsibility.
 
-To use it:
+The **Models** tab's **Uncensor** column marks it `optional` for the model it fits and `licence` for NVIDIA's NVFP4
+and FP4-Local; installing never adds it. In the model list a config that runs it shows `uncensored` after its quant
+(Strata's own `data/experimental-speed-projection` vector removes refusals too and is shown the same way).
 
-1. Download the three files from commit `a1ad5954` into `<Strata folder>\data\uncensor\` and check them:
+**Uncensored variant...** (Config tab) makes one from the open config:
+
+1. It is offered only for the NVFP4 GPTQ pack (`Maximilian228--Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata`), the Qwen-licensed
+   model the vector was made and measured on. NVIDIA's NVFP4 and FP4-Local are refused (their licence does not allow
+   bypassing the model's safety guardrails), and so are other weights.
+2. It downloads the three files from commit `a1ad5954` into `<data folder>\uncensor\` and checks each against its
+   SHA-256 sum; a file that does not match is deleted and nothing is written. Files already there that match are not
+   fetched again.
 
    | File | SHA-256 |
    | --- | --- |
@@ -171,23 +178,23 @@ To use it:
    | `qwen-nvfp4-gptq-uncensored.json` | `83858b5db79b78e8790fc9e0c05bf7ae2681640b1248372dffda517a038d89c1` |
    | `README.md` | `7fb4156ba62d9c6d49faa826b5300e9992c2e3e88f947fe839f90163d754a273` |
 
-   ```powershell
-   $src = 'https://raw.githubusercontent.com/sergqwer/strata-nvfp4/a1ad595440468ededd8b87cf46a6906310930170/data/uncensor'
-   ```
-
-2. In the **Config** tab, open the model's config and **Save as new** (for example `strata-nvfp4-uncensored.json`)
-   with its own `model_name`, `port` and `log`, and add to its engine arguments:
+3. It writes `strata-<name>-uncensored.json`: the open config with its own `model_name` (`...-uncensored`), the next
+   free port and its own log, and these engine arguments in place of any control vector the original had:
 
    ```
-   --control-vector-scaled <Strata folder>\data\uncensor\qwen-nvfp4-gptq-uncensored.gguf:1.0
+   --control-vector-scaled <data folder>\uncensor\qwen-nvfp4-gptq-uncensored.gguf:1.0
    --control-vector-layer-range 8 33 --cvec-mode project --cvec-dir per-layer
    ```
 
-   In this Strata the vector is on for every request of that config; the per-request `"uncensored"` switch the other
-   fork's README describes is that fork's own server code. The original config stays as it was.
+   The original config is not changed. Used on the variant itself (or again on the original), it rebuilds the variant
+   from the saved config and keeps its port.
 
-To rebuild the vector rather than download it, follow the method in that README (made on the NVFP4 GPTQ pack); it is
-not reproduced here.
+In this Strata the vector is on for every request of that config; the per-request `"uncensored"` switch the other fork's
+README describes is that fork's own server code. To do it by hand, download the files from
+`https://raw.githubusercontent.com/sergqwer/strata-nvfp4/a1ad595440468ededd8b87cf46a6906310930170/data/uncensor/<file>`,
+check the sums, and add the arguments above to a copy made with **Save as new**. That README describes how the vector
+was made (the refusal direction of Arditi et al. 2024, from 320 harmful and 320 harmless prompts), but the scripts that
+built it are not published, so it cannot be rebuilt from that repository.
 
 ## Sessions
 

@@ -302,5 +302,69 @@ try {
     Assert-Is (Get-ContinueVsix (Join-Path $vdir 'missing')) $null 'nothing there'
 } finally { Remove-Item -LiteralPath $vdir -Recurse -Force -ErrorAction SilentlyContinue }
 
+# ---------------------------------------------------------------- uncensored variant
+Invoke-Expression (Get-FunctionText $gui @('Get-UncensorRefusal', 'New-UncensorVariant', 'Get-UncensorFiles'))
+Write-Host '--- uncensored variant'
+$m = 'D:\ai\Strata-data\models'
+$gptq = [pscustomobject]@{ args = @('--pack', "$m\Maximilian228--Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata\pack", '--native',
+        "$m\Maximilian228--Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata\qwen-nvfp4-gptq-dense.gguf", '--spec', '3',
+        '--control-vector-scaled', 'data\experimental-speed-projection\x.gguf:1.0', '--control-vector-layer-range', '10', '30', '--kv', 'int8');
+    model_name = 'qwen3.8-flash-next-nvfp4-nvfp4'; port = 8083; log = 'M:\strata\strata-nvfp4-nvfp4.log'; lib_dirs = @('C:\cu13') }
+Assert-Is (Get-UncensorRefusal $gptq) '' 'the NVFP4 GPTQ pack it was made on is allowed'
+foreach ($p in 'Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata\pack', 'nvidia--Qwen3.8-Flash-Next-FP4-Local\prepared') {
+    Assert-Is ((Get-UncensorRefusal ([pscustomobject]@{ args = @('--pack', "$m\$p") })) -match 'licence') $true "refused for NVIDIA's weights ($($p.Split('\')[0]))"
+}
+Assert-Is ((Get-UncensorRefusal ([pscustomobject]@{ args = @('--native', "$m\orca-iq3_xxs\Qwen3.8-Flash-Next-Uncensored-IQ3_XXS-00001-of-00002.gguf") })) -match 'already') $true 'Orca: uncensored already'
+Assert-Is ((Get-UncensorRefusal ([pscustomobject]@{ args = @('--native', "$m\unsloth\Qwen3.8-Flash-Next-UD-Q5_K_XL.gguf") })) -match 'other weights') $true 'other weights refused'
+
+$vec = 'D:\ai\Strata-data\uncensor\qwen-nvfp4-gptq-uncensored.gguf'
+$v = New-UncensorVariant $gptq 'strata-nvfp4-nvfp4.json' $vec @(8083, 8084, 8086) $null
+Assert-Is $v.File 'strata-nvfp4-nvfp4-uncensored.json' 'variant file name'
+Assert-Is $v.Cfg.model_name 'qwen3.8-flash-next-nvfp4-nvfp4-uncensored' 'its own model_name'
+Assert-Is $v.Cfg.port 8085 'the next port no config uses'
+Assert-Is $v.Cfg.log 'M:\strata\strata-nvfp4-nvfp4-uncensored.log' 'its own log'
+Assert-Is ($v.Cfg.args -join ' ') ("--pack $m\Maximilian228--Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata\pack --native $m\Maximilian228--Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata\qwen-nvfp4-gptq-dense.gguf --spec 3 --kv int8 " +
+    "--control-vector-scaled ${vec}:1.0 --control-vector-layer-range 8 33 --cvec-mode project --cvec-dir per-layer") 'the old control vector replaced by this one'
+Assert-Is $gptq.port 8083 'the original is not changed'
+Assert-Is (@($gptq.args) -contains '--kv') $true 'the original args are kept'
+Assert-Is (@($v.Cfg.lib_dirs).Count) 1 'one-item arrays stay arrays'
+$again = New-UncensorVariant $v.Cfg $v.File $vec @(8083) ([pscustomobject]@{ port = 8086 })
+Assert-Is "$($again.File) $($again.Cfg.model_name) $($again.Cfg.port)" 'strata-nvfp4-nvfp4-uncensored.json qwen3.8-flash-next-nvfp4-nvfp4-uncensored 8086' 'from a variant: the same variant, its port kept'
+Assert-Is (@($again.Cfg.args | Where-Object { $_ -eq '--control-vector-scaled' }).Count) 1 'one vector, not two'
+
+Invoke-Expression (Get-FunctionText $gui @('Get-VectorTag', 'Get-UncensorCatalogMark'))
+Assert-Is (Get-VectorTag $v.Cfg) 'uncensored' 'the launch list tags the variant'
+Assert-Is (Get-VectorTag ([pscustomobject]@{ args = @('--control-vector-scaled', 'M:\s\data\experimental-speed-projection\Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0') })) 'uncensored' "Strata's speed projection is a refusal vector too"
+Assert-Is (Get-VectorTag ([pscustomobject]@{ args = @('--control-vector', 'D:\v\verbosity.gguf') })) 'control vector' 'any other vector'
+Assert-Is (Get-VectorTag ([pscustomobject]@{ args = @('--kv', 'int8') })) '' 'no vector, no tag'
+$gplc = 'Qwen Community License 1.0 (Qwen3.8-Flash-Next''s): https://huggingface.co/Qwen/Qwen3.8-Flash-Next'
+Assert-Is (Get-UncensorCatalogMark ([pscustomobject]@{ repo = 'Maximilian228/Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata'; license = $gplc })) 'optional' 'Models tab: the GPTQ pack'
+Assert-Is (Get-UncensorCatalogMark ([pscustomobject]@{ repo = 'Maximilian228/Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata'; license = 'NVIDIA Open Model License with Qwen terms' })) 'licence' "Models tab: NVIDIA's NVFP4"
+Assert-Is (Get-UncensorCatalogMark ([pscustomobject]@{ repo = 'nvidia/Qwen3.8-Flash-Next-FP4-Local'; license = '' })) 'licence' 'Models tab: FP4-Local'
+Assert-Is (Get-UncensorCatalogMark ([pscustomobject]@{ repo = $null; license = $null })) '' 'Models tab: other models blank'
+
+Invoke-Expression (Get-FunctionText $gui @('Get-ArgValueCount', 'Split-ArgEntries'))
+$se = Split-ArgEntries $v.Cfg.args
+Assert-Is (($se | Where-Object { $_.Flag -eq '--control-vector-layer-range' }).Value) '8 33' 'the editor keeps both values of the layer range'
+Assert-Is (($se | Where-Object { $_.Flag -eq '--kv' }).Value) 'int8' 'one-value flags as before'
+Assert-Is $se.Count 8 'every flag is one entry'
+
+$udir = Join-Path $env:TEMP "uncensor-test-$PID"; $src = Join-Path $udir 'src'; $dst = Join-Path $udir 'dst'
+New-Item -ItemType Directory -Force $src | Out-Null
+try {
+    Set-Content -LiteralPath (Join-Path $src 'a.gguf') -Value 'vector' -NoNewline -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $src 'b.md') -Value 'readme' -NoNewline -Encoding ascii
+    $UncensorSource = ([Uri]$src).AbsoluteUri
+    $UncensorFiles = [ordered]@{ 'a.gguf' = (Get-FileHash (Join-Path $src 'a.gguf')).Hash; 'b.md' = (Get-FileHash (Join-Path $src 'b.md')).Hash }
+    Assert-Is (Get-UncensorFiles $dst) '' 'downloaded and checked'
+    Assert-Is (Test-Path (Join-Path $dst 'a.gguf')) $true 'the vector is there'
+    Set-Content -LiteralPath (Join-Path $dst 'b.md') -Value 'changed' -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $src 'b.md') -Value 'tampered' -Encoding ascii
+    Assert-Is ((Get-UncensorFiles $dst) -match 'does not match') $true 'a file that does not match its sum is refused'
+    Assert-Is (Test-Path (Join-Path $dst 'b.md.part')) $false '... and deleted'
+    Remove-Item -LiteralPath (Join-Path $src 'a.gguf')
+    Assert-Is (@(Get-ChildItem $dst).Count) 2 'a matching file already there is not fetched again'
+} finally { Remove-Item -LiteralPath $udir -Recurse -Force -ErrorAction SilentlyContinue }
+
 if ($fails) { "`n$fails FAILED"; exit 1 }
 "`nall good"
