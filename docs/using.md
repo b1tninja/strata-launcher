@@ -152,6 +152,43 @@ opens the file.
 powershell -ExecutionPolicy Bypass -File cline-strata.ps1 [-Model <id>] [-StrataBase http://127.0.0.1:8080] [-Thinking low] [-Plan]
 ```
 
+## An uncensored variant (optional, not included)
+
+Neither this launcher nor Strata ships one. Another Strata fork, [sergqwer/strata-nvfp4](https://github.com/sergqwer/strata-nvfp4)
+(MIT), publishes a control vector that stops Qwen3.8-Flash-Next from declining requests: `data/uncensor/` there, with its
+README (how it was made, what it does to quality, licence) and a JSON of its scores. It is for Qwen-licensed weights only:
+the NVFP4 GPTQ pack (`Maximilian228--Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata`) it was built on, and per its README the
+`qwen` and Unsloth GGUFs. Never use it with NVIDIA's NVFP4 model: its licence does not allow bypassing the model's
+safety guardrails. With it on, what the model writes is your responsibility.
+
+To use it:
+
+1. Download the three files from commit `a1ad5954` into `<Strata folder>\data\uncensor\` and check them:
+
+   | File | SHA-256 |
+   | --- | --- |
+   | `qwen-nvfp4-gptq-uncensored.gguf` | `a2ec3e999724022a55d48d30822bd10b1b25916ccc221013a119a674d06a46b5` |
+   | `qwen-nvfp4-gptq-uncensored.json` | `83858b5db79b78e8790fc9e0c05bf7ae2681640b1248372dffda517a038d89c1` |
+   | `README.md` | `7fb4156ba62d9c6d49faa826b5300e9992c2e3e88f947fe839f90163d754a273` |
+
+   ```powershell
+   $src = 'https://raw.githubusercontent.com/sergqwer/strata-nvfp4/a1ad595440468ededd8b87cf46a6906310930170/data/uncensor'
+   ```
+
+2. In the **Config** tab, open the model's config and **Save as new** (for example `strata-nvfp4-uncensored.json`)
+   with its own `model_name`, `port` and `log`, and add to its engine arguments:
+
+   ```
+   --control-vector-scaled <Strata folder>\data\uncensor\qwen-nvfp4-gptq-uncensored.gguf:1.0
+   --control-vector-layer-range 8 33 --cvec-mode project --cvec-dir per-layer
+   ```
+
+   In this Strata the vector is on for every request of that config; the per-request `"uncensored"` switch the other
+   fork's README describes is that fork's own server code. The original config stays as it was.
+
+To rebuild the vector rather than download it, follow the method in that README (made on the NVFP4 GPTQ pack); it is
+not reproduced here.
+
 ## Sessions
 
 Strata can write the engine's state for a conversation (KV cache, recurrent state, its checkpoint)
