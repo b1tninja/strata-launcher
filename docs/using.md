@@ -137,7 +137,8 @@ It:
    as they add the same views and commands;
 2. writes `~/.continue/configs/strata.yaml`: a config named **Strata** with two entries for the selected model, a
    **plan** entry with the **Plan thinking** level and an **act** entry with the **Thinking** level (sent as
-   `reasoning_effort` in each request), tool use on, the server's real context, and Qwen's thinking-mode sampling.
+   `reasoning_effort` in each request), tool use on, pictures on when the server reads them (its `/health` says `images`; without `image_input`
+   in the capabilities list Continue turns them off), the server's real context, and Qwen's thinking-mode sampling.
    The reply cap (`maxTokens`) is 32,768 tokens (a quarter of a smaller context): Strata counts the thinking in it and
    ends thinking when a quarter is left, so the 8,192 cap used before stopped `xhigh` plans at about 6K tokens;
    an **autocomplete** entry gives Tab the same server, over chat (Strata has no `/v1/completions`) with thinking off

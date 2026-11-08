@@ -280,6 +280,9 @@ Assert-Is ((Get-ContinueConfigText $crow 1000 '' 'low') -match '(?s)- plan\s*\n.
 Assert-Is ($ctext -match '(?s)  - name: Strata qwen3\.8-flash-next-nvfp4-nvfp4 - autocomplete\s*\n.*roles: \[autocomplete\]') $true 'an autocomplete entry'
 Assert-Is ($ctext -match 'useLegacyCompletionsEndpoint: false' -and $ctext -match 'enable_thinking: false' -and $ctext -match 'modelTimeout: 1000') $true 'Tab over chat, no thinking, a timeout that fits'
 Assert-Is (@($ctext -split "`n" | Where-Object { $_ -match 'roles: \[autocomplete\]' }).Count) 1 'only the Tab entry autocompletes'
+$itext = Get-ContinueConfigText $crow 524288 'xhigh' 'low' $true
+Assert-Is (@($itext -split "`n" | Where-Object { $_ -match '^    capabilities: \[tool_use, image_input\]$' }).Count) 2 'a server that reads images: both chat entries take them'
+Assert-Is ($ctext -match 'image_input') $false 'a server without images: none offered'
 Assert-Is ($ctext -match '[^\x00-\x7F]') $false 'plain ASCII'
 $vdir = Join-Path $env:TEMP "vsix-test-$PID"; New-Item -ItemType Directory -Force $vdir | Out-Null
 try {

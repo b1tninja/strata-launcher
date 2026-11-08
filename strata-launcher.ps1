@@ -1115,7 +1115,7 @@ function Start-Server($Row, [switch]$Quiet) {
     $script:started[$Row.Port] = $proc
     $script:startedRow[$Row.Port] = $Row.Path
     $script:startedCfg[$Row.Port] = $cfgPath   # with its overrides: what a benchmark of it records
-    $script:health[$Row.Port] = [pscustomobject]@{ Up = $false; Loaded = $false; Model = ''; Context = 0; Starting = (Get-Date) }
+    $script:health[$Row.Port] = [pscustomobject]@{ Up = $false; Loaded = $false; Model = ''; Context = 0; Images = $false; Starting = (Get-Date) }
     Set-Status "Starting $($Row.Model) on port $($Row.Port)$(if ($cfgPath -ne $Row.Path) { ' with overrides' })..."
     return $true
 }
@@ -1127,13 +1127,14 @@ function Update-Health {
         if ($task) {
             if (-not $task.IsCompleted) { continue }
             $prev = $script:health[$port]
-            $h = [pscustomobject]@{ Up = $false; Loaded = $false; Model = ''; Context = 0; Starting = $null }
+            $h = [pscustomobject]@{ Up = $false; Loaded = $false; Model = ''; Context = 0; Images = $false; Starting = $null }
             if ($task.Status -eq 'RanToCompletion') {
                 try {
                     $j = $task.Result | ConvertFrom-Json
                     if ($j.service -eq 'strata') {
                         $h.Up = $true; $h.Loaded = [bool]$j.loaded; $h.Model = [string]$j.model
                         $h.Context = if ($j.max_context) { [int64]$j.max_context } else { 0 }
+                        $h.Images = [bool]$j.images   # the vision encoder is on (--vision)
                     }
                 } catch {}
             }
@@ -1335,12 +1336,15 @@ function Get-InstalledExtensions([string]$Code) {
     return $map
 }
 
-function Get-ContinueConfigText($Row, [int]$Context, [string]$PlanEffort, [string]$ActEffort) {
+function Get-ContinueConfigText($Row, [int]$Context, [string]$PlanEffort, [string]$ActEffort, [bool]$Images = $false) {
     # Two entries for the same server: plan (more thinking) and act (less). Strata takes reasoning_effort in the request
     # body (high and xhigh are the model's top level, none is no thinking); sampling is Qwen's for thinking mode.
     # maxTokens counts the thinking too: Strata ends thinking when a quarter of it is left, so 8192 stopped xhigh plans at
     # ~6K tokens. Continue keeps only min(1000, maxTokens) of the context free for the answer, so a big cap costs nothing.
+    # A capabilities list is all Continue goes by, so image_input must be in it when the server reads images (its
+    # /health "images"); without it Continue turns pictures off even though Strata takes them.
     $base = "$(Get-BaseUrl $Row)/v1"
+    $caps = if ($Images) { '[tool_use, image_input]' } else { '[tool_use]' }
     $maxOut = [Math]::Max(4096, [Math]::Min(32768, [int]($Context / 4)))
     $entry = {
         param($label, $effort)
@@ -1351,7 +1355,7 @@ function Get-ContinueConfigText($Row, [int]$Context, [string]$PlanEffort, [strin
             "    apiBase: $base",
             "    apiKey: strata",
             "    roles: [chat, edit, apply, summarize]",
-            "    capabilities: [tool_use]",
+            "    capabilities: $caps",
             "    defaultCompletionOptions:",
             "      contextLength: $Context",
             "      maxTokens: $maxOut",
@@ -1419,7 +1423,8 @@ function Start-VsCode($Row) {
     }
     $other = @('continue.continue', 'b1tninja.continued') | Where-Object { $_ -ne $id -and $exts[$_] }
     $eff = { param($v) if ($ThinkingLevels -contains $v) { $v } else { '' } }
-    $text = Get-ContinueConfigText $Row $raw (& $eff ([string]$ui.PlanThinkingBox.SelectedItem)) (& $eff ([string]$ui.ThinkingBox.SelectedItem))
+    $images = [bool]$script:health[$Row.Port].Images
+    $text = Get-ContinueConfigText $Row $raw (& $eff ([string]$ui.PlanThinkingBox.SelectedItem)) (& $eff ([string]$ui.ThinkingBox.SelectedItem)) $images
     $cfg = Get-ContinueConfigPath
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cfg) | Out-Null
     [IO.File]::WriteAllText($cfg, $text + "`n", (New-Object Text.UTF8Encoding $false))
