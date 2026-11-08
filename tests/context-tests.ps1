@@ -302,11 +302,46 @@ try {
     & $newVsix 'continued-win32-x64-1.3.40-3e4599d.vsix' 'b1tninja' 'continued' '1.3.40-3e4599d'
     Set-Content -LiteralPath (Join-Path $vdir 'other.vsix') -Value 'x'
     $v = Get-ContinueVsix $vdir
-    Assert-Is "$($v.Id) $($v.Version)" 'b1tninja.continued 1.3.40-3e4599d' 'a folder: the newest continue*.vsix, id and version from its manifest'
+    Assert-Is "$($v.Id) $($v.Version)" 'b1tninja.continued 1.3.40-3e4599d' 'a folder: the newest continu*.vsix, id and version from its manifest'
+    Start-Sleep -Milliseconds 50
+    & $newVsix 'continuous-win32-x64-2.4.2.vsix' 'b1tninja' 'continuous' '2.4.2'
+    Assert-Is (Get-ContinueVsix $vdir).Id 'b1tninja.continuous' 'the renamed fork''s continuous-*.vsix'
     Assert-Is (Get-ContinueVsix (Join-Path $vdir 'continue-1.3.40.vsix')).Id 'Continue.continue' 'a file: that file'
     Assert-Is (Get-ContinueVsix (Join-Path $vdir 'other.vsix')) $null 'not a package'
     Assert-Is (Get-ContinueVsix (Join-Path $vdir 'missing')) $null 'nothing there'
 } finally { Remove-Item -LiteralPath $vdir -Recurse -Force -ErrorAction SilentlyContinue }
+
+Write-Host '--- Continue global folder'
+Invoke-Expression (Get-FunctionText $gui @('Get-ContinueGlobalDir', 'Get-ContinueConfigPath'))
+$ContinuousIds = @('b1tninja.continuous')
+$home0 = $env:USERPROFILE; $envs0 = $env:CONTINUOUS_GLOBAL_DIR, $env:CONTINUE_GLOBAL_DIR
+$hdir = Join-Path $env:TEMP "home-test-$PID"; New-Item -ItemType Directory -Force $hdir | Out-Null
+try {
+    $env:USERPROFILE = $hdir; $env:CONTINUOUS_GLOBAL_DIR = ''; $env:CONTINUE_GLOBAL_DIR = ''
+    $old = Join-Path $hdir '.continue'; $new = Join-Path $hdir '.continuous'
+    Assert-Is (Get-ContinueGlobalDir 'b1tninja.continuous') $new 'Continuous, nothing yet: ~/.continuous'
+    New-Item -ItemType Directory -Force $old | Out-Null
+    Assert-Is (Get-ContinueGlobalDir 'b1tninja.continuous') $old 'Continuous before its first start: ~/.continue, which its copy carries over'
+    Assert-Is (Get-ContinueGlobalDir 'continue.continue') $old 'upstream: ~/.continue'
+    Assert-Is (Get-ContinueGlobalDir 'b1tninja.continued') $old 'the older fork: ~/.continue'
+    New-Item -ItemType Directory -Force $new | Out-Null
+    Assert-Is (Get-ContinueGlobalDir 'b1tninja.continuous') $new 'Continuous after its copy: ~/.continuous'
+    Assert-Is (Get-ContinueGlobalDir 'continue.continue') $old 'upstream still ~/.continue'
+    Assert-Is (Get-ContinueConfigPath 'b1tninja.continuous') (Join-Path $new 'configs\strata.yaml') 'the config file'
+    Assert-Is (Get-ContinueConfigPath) (Join-Path $new 'configs\strata.yaml') 'no file yet: where Continuous would write it'
+    New-Item -ItemType Directory -Force (Join-Path $old 'configs') | Out-Null
+    Set-Content -LiteralPath (Join-Path $old 'configs\strata.yaml') -Value 'x'
+    Assert-Is (Get-ContinueConfigPath) (Join-Path $old 'configs\strata.yaml') 'no id: the file written last'
+    $env:CONTINUOUS_GLOBAL_DIR = 'X:\cg'
+    Assert-Is (Get-ContinueGlobalDir 'b1tninja.continuous') 'X:\cg' 'CONTINUOUS_GLOBAL_DIR wins'
+    Assert-Is (Get-ContinueGlobalDir 'continue.continue') $old 'and upstream does not read it'
+    $env:CONTINUOUS_GLOBAL_DIR = ''; $env:CONTINUE_GLOBAL_DIR = 'X:\c'
+    Assert-Is (Get-ContinueGlobalDir 'b1tninja.continuous') 'X:\c' 'Continuous still reads CONTINUE_GLOBAL_DIR'
+    Assert-Is (Get-ContinueGlobalDir 'continue.continue') 'X:\c' 'as upstream does'
+} finally {
+    $env:USERPROFILE = $home0; $env:CONTINUOUS_GLOBAL_DIR, $env:CONTINUE_GLOBAL_DIR = $envs0
+    Remove-Item -LiteralPath $hdir -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 # ---------------------------------------------------------------- uncensored variant
 Invoke-Expression (Get-FunctionText $gui @('Get-UncensorRefusal', 'New-UncensorVariant', 'Get-UncensorFiles'))

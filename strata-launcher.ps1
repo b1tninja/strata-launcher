@@ -357,12 +357,14 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
               </Grid.ColumnDefinitions>
               <TextBlock Text="Extension VSIX" Style="{StaticResource Label}"/>
               <TextBox Grid.Column="1" x:Name="VsixBox"
-                       ToolTip="The Continue extension package to install: a .vsix file, or a folder (the newest continue-*.vsix in it is used). The continued fork builds one into extensions\vscode\build with npm run package."/>
+                       ToolTip="The extension package to install: a .vsix file, or a folder (the newest continu*.vsix in it is used). Continuous, the Continue fork, is on its GitHub releases (continuous-win32-x64-*.vsix), or npm run package in its extensions\vscode builds one into extensions\vscode\build."/>
               <Button Grid.Column="2" x:Name="VsixBrowse" Content="Browse..." Margin="8,0,0,0"/>
             </Grid>
             <StackPanel Orientation="Horizontal" Margin="110,4,0,0">
               <Button x:Name="VsCodeBtn" Content="Open VS Code" FontWeight="SemiBold" Margin="0,0,8,0"
-                      ToolTip="Installs the VSIX when Continue is missing or older, writes ~/.continue/configs/strata.yaml for the selected model (a plan entry with the Plan thinking level and an act entry with the Thinking level), starts the server if needed, then opens VS Code in the project folder."/>
+                      ToolTip="Installs the VSIX when Continue is missing or older, writes configs/strata.yaml in ~/.continuous (Continuous) or ~/.continue for the selected model (a plan entry with the Plan thinking level and an act entry with the Thinking level), starts the server if needed, then opens VS Code in the project folder."/>
+              <Button x:Name="ContinuousCliBtn" Content="Open Continuous CLI" Margin="0,0,8,0"
+                      ToolTip="Continuous in a terminal (its terminal UI, the command continuous): writes the same strata.yaml, starts the server if needed, then opens a PowerShell window in the project folder running continuous --config on it. The Setup tab's Continuous CLI step installs it."/>
               <Button x:Name="ContinueCfgBtn" Content="Open Continue config"/>
             </StackPanel>
             <TextBlock x:Name="VsCodeHint" Style="{StaticResource Hint}" Text="In Continue, pick the &quot;Strata&quot; config in the configs dropdown, then the plan or act model. Tab autocomplete uses the same server."/>
@@ -1281,9 +1283,30 @@ function Start-Cline($Row, [switch]$Plan) {
 }
 
 # ------------------------------------------------------------------------------------ VS Code + Continue
-# Continue (and the continued fork) loads every YAML file in ~/.continue/configs as a config of its own beside the
-# user's config.yaml, so the launcher keeps its models in one file there and never edits the user's.
-function Get-ContinueConfigPath { Join-Path $env:USERPROFILE '.continue\configs\strata.yaml' }
+# Continue (and the Continuous fork) loads every YAML file in its global folder's configs as a config of its own beside
+# the user's config.yaml, so the launcher keeps its models in one file there and never edits the user's.
+# Continuous (b1tninja.continuous, 2.4.2 on) uses ~/.continuous, and its first start copies ~/.continue there only
+# when ~/.continuous does not exist yet. So until it does, the file goes in ~/.continue and travels with that copy:
+# making ~/.continuous first would skip the copy of the user's own config. Upstream and the older continued fork
+# (b1tninja.continued) use ~/.continue. Both honour their *_GLOBAL_DIR variables. No Id: the file Open VS Code
+# wrote last.
+$ContinuousIds = @('b1tninja.continuous')
+$ContinueIds = @('b1tninja.continuous', 'b1tninja.continued', 'continue.continue')   # preferred first
+function Get-ContinueGlobalDir([string]$Id) {
+    $old = Join-Path $env:USERPROFILE '.continue'
+    if ($ContinuousIds -notcontains $Id) { if ($env:CONTINUE_GLOBAL_DIR) { return $env:CONTINUE_GLOBAL_DIR }; return $old }
+    foreach ($v in $env:CONTINUOUS_GLOBAL_DIR, $env:CONTINUE_GLOBAL_DIR) { if ($v) { return $v } }
+    $new = Join-Path $env:USERPROFILE '.continuous'
+    if ((Test-Path -LiteralPath $new) -or -not (Test-Path -LiteralPath $old)) { return $new }
+    return $old
+}
+function Get-ContinueConfigPath([string]$Id) {
+    if ($Id) { return Join-Path (Get-ContinueGlobalDir $Id) 'configs\strata.yaml' }
+    $files = foreach ($i in $ContinuousIds[0], 'continue.continue') { Join-Path (Get-ContinueGlobalDir $i) 'configs\strata.yaml' }
+    $found = @($files | Select-Object -Unique | Where-Object { Test-Path -LiteralPath $_ } | Sort-Object { (Get-Item -LiteralPath $_).LastWriteTime })
+    if ($found) { return $found[-1] }
+    return $files[0]
+}
 
 function Get-CodeCommand {
     $c = Get-Command code -ErrorAction SilentlyContinue
@@ -1295,12 +1318,12 @@ function Get-CodeCommand {
 }
 
 function Get-ContinueVsix([string]$Path) {
-    # A .vsix, or the newest continue*.vsix in a folder (upstream's continue-*, the fork's continued-*).
-    # -> @{ Path; Id (publisher.name); Version }, both read from the package's manifest, or $null.
+    # A .vsix, or the newest continu*.vsix in a folder (upstream's continue-*, the fork's continuous-* and its older
+    # continued-*). -> @{ Path; Id (publisher.name); Version }, both read from the package's manifest, or $null.
     if (-not $Path) { return $null }
     $f = if (Test-Path -LiteralPath $Path -PathType Leaf) { Get-Item -LiteralPath $Path }
          elseif (Test-Path -LiteralPath $Path -PathType Container) {
-             Get-ChildItem -LiteralPath $Path -Filter 'continue*.vsix' -File | Sort-Object LastWriteTime | Select-Object -Last 1 }
+             Get-ChildItem -LiteralPath $Path -Filter 'continu*.vsix' -File | Sort-Object LastWriteTime | Select-Object -Last 1 }
     if (-not $f) { return $null }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     try {
@@ -1387,7 +1410,7 @@ function Get-ContinueConfigText($Row, [int]$Context, [string]$PlanEffort, [strin
         "          enable_thinking: false") -join "`n"
     @(
         '# Written by Strata Launcher (Open VS Code) for the selected model; rewritten on every launch.',
-        '# Your own ~/.continue/config.yaml is not touched. Pick "Strata" in Continue''s configs dropdown.',
+        '# Your own config.yaml beside this folder is not touched. Pick "Strata" in the configs dropdown.',
         'name: Strata',
         'version: 1.0.0',
         'schema: v1',
@@ -1398,6 +1421,41 @@ function Get-ContinueConfigText($Row, [int]$Context, [string]$PlanEffort, [strin
     ) -join "`n"
 }
 
+function Write-ContinueConfig($Row, [string]$Id, [int]$Context) {
+    # strata.yaml for the selected model in that extension's global folder, with the two thinking levels -> its path.
+    $eff = { param($v) if ($ThinkingLevels -contains $v) { $v } else { '' } }
+    $images = [bool]$script:health[$Row.Port].Images
+    $text = Get-ContinueConfigText $Row $Context (& $eff ([string]$ui.PlanThinkingBox.SelectedItem)) (& $eff ([string]$ui.ThinkingBox.SelectedItem)) $images
+    $cfg = Get-ContinueConfigPath $Id
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cfg) | Out-Null
+    [IO.File]::WriteAllText($cfg, $text + "`n", (New-Object Text.UTF8Encoding $false))
+    return $cfg
+}
+
+# Continuous's command line (its terminal UI): the fork's releases carry it as an npm package
+# (continuous-cli-<version>.tgz), installed with npm install -g; its command is continuous (upstream's is cn).
+$ContinuousRepo = 'b1tninja/continuous'
+function Get-ContinuousCli {
+    $c = Get-Command continuous -ErrorAction SilentlyContinue
+    if ($c) { return $c.Source }
+    $p = Join-Path $env:APPDATA 'npm\continuous.cmd'
+    if (Test-Path -LiteralPath $p) { return $p }
+    return $null
+}
+
+function Start-ContinuousCli($Row) {
+    $cli = Get-ContinuousCli
+    if (-not $cli) { Set-Status 'The Continuous CLI is not installed: the Setup tab''s Continuous CLI step installs it.'; return }
+    $folder = Clean-Path $ui.FolderBox.Text
+    $raw = Get-RowContext $Row
+    if ($raw -le 0) { Set-Status "Cannot tell $($Row.Model)'s context; the Continuous CLI was not opened."; return }
+    $cfg = Write-ContinueConfig $Row $ContinuousIds[0] $raw
+    $cmd = "& '$($cli -replace "'", "''")' --config '$($cfg -replace "'", "''")'"
+    Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -ArgumentList "-NoExit -ExecutionPolicy Bypass -Command `"$($cmd -replace '"', '\"')`"" -WorkingDirectory $folder
+    Set-Status ("Opened the Continuous CLI in $folder; {0} points at $($Row.Model) ({1:n0} tokens)." -f $cfg, $raw)
+}
+
 function Start-VsCode($Row) {
     $code = Get-CodeCommand
     if (-not $code) { Set-Status 'VS Code not found: install it (code.visualstudio.com), then try again.'; return }
@@ -1405,11 +1463,12 @@ function Start-VsCode($Row) {
     $raw = Get-RowContext $Row
     if ($raw -le 0) { Set-Status "Cannot tell $($Row.Model)'s context; VS Code was not opened."; return }
     # Continue: install the package when that extension is missing or a different build. The fork is its own
-    # extension (b1tninja.continued), so upstream's (continue.continue) is left alone, with a warning: both add the
-    # same views and commands.
+    # extension (b1tninja.continuous; b1tninja.continued before 2.4.2), so upstream's (continue.continue) is left
+    # alone. The older two are flagged when installed beside it: they add the same views and commands. Continuous's
+    # settings and commands are its own (continuous.*), so it does not clash with them.
     $vsix = Get-ContinueVsix (Clean-Path $ui.VsixBox.Text)
     $exts = Get-InstalledExtensions $code
-    $id = if ($vsix) { $vsix.Id.ToLower() } elseif ($exts['b1tninja.continued']) { 'b1tninja.continued' } else { 'continue.continue' }
+    $id = if ($vsix) { $vsix.Id.ToLower() } else { @($ContinueIds | Where-Object { $exts[$_] }) + 'continue.continue' | Select-Object -First 1 }
     $have = $exts[$id]
     if ($vsix -and $have -ne $vsix.Version) {
         Set-Status "Installing $($vsix.Id) $($vsix.Version) from $($vsix.Path)..."
@@ -1418,30 +1477,28 @@ function Start-VsCode($Row) {
         $have = (Get-InstalledExtensions $code)[$id]
         if (-not $have) { [System.Windows.MessageBox]::Show("$($vsix.Id) did not install:`n`n$out", 'Strata') | Out-Null; return }
     } elseif (-not $have) {
-        Set-Status 'Continue is not installed and no VSIX was found: build one (npm run package in the fork''s extensions\vscode) or pick a .vsix.'
+        Set-Status 'Neither Continuous nor Continue is installed and no VSIX was found: get one from github.com/b1tninja/continuous/releases (or npm run package in its extensions\vscode) and pick it.'
         return
     }
-    $other = @('continue.continue', 'b1tninja.continued') | Where-Object { $_ -ne $id -and $exts[$_] }
-    $eff = { param($v) if ($ThinkingLevels -contains $v) { $v } else { '' } }
-    $images = [bool]$script:health[$Row.Port].Images
-    $text = Get-ContinueConfigText $Row $raw (& $eff ([string]$ui.PlanThinkingBox.SelectedItem)) (& $eff ([string]$ui.ThinkingBox.SelectedItem)) $images
-    $cfg = Get-ContinueConfigPath
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cfg) | Out-Null
-    [IO.File]::WriteAllText($cfg, $text + "`n", (New-Object Text.UTF8Encoding $false))
+    $other = if ($ContinuousIds -contains $id) { @() } else {
+        @('continue.continue', 'b1tninja.continued') | Where-Object { $_ -ne $id -and $exts[$_] } }
+    $cfg = Write-ContinueConfig $Row $id $raw
     Start-Process -FilePath $code -ArgumentList (QPath $folder) -WindowStyle Hidden
     $warn = if ($other) { " $($other -join ', ') is installed too: disable it in VS Code, they clash." } else { '' }
     Set-Status ("Opened VS Code in $folder with $id $have; {0} points at $($Row.Model) ({1:n0} tokens).$warn" -f $cfg, $raw)
 }
 
-function Open-VsCode {
+function Open-VsCode([switch]$Cli) {
+    # Open VS Code, or with -Cli Open Continuous CLI: start the server if needed, then open it once the model has loaded.
     $row = Get-Selected
     if (-not $row) { return }
     $folder = Clean-Path $ui.FolderBox.Text
     if (-not (Test-Path -LiteralPath $folder -PathType Container)) { [System.Windows.MessageBox]::Show('Choose a project folder.', 'Strata') | Out-Null; return }
-    if (Test-RowReady $row) { Start-VsCode $row; return }
+    if ($Cli -and -not (Get-ContinuousCli)) { Set-Status 'The Continuous CLI is not installed: the Setup tab''s Continuous CLI step installs it.'; return }
+    if (Test-RowReady $row) { if ($Cli) { Start-ContinuousCli $row } else { Start-VsCode $row }; return }
     if (-not (Start-Server $row)) { return }
-    $script:clinePending = @{ Row = $row; T0 = Get-Date; Target = 'vscode' }
-    Set-Status "VS Code opens once $($row.Model) has loaded..."
+    $script:clinePending = @{ Row = $row; T0 = Get-Date; Target = $(if ($Cli) { 'cli' } else { 'vscode' }) }
+    Set-Status "$(if ($Cli) { 'The Continuous CLI' } else { 'VS Code' }) opens once $($row.Model) has loaded..."
 }
 
 # ------------------------------------------------------------------------------------ benchmark
@@ -2216,6 +2273,14 @@ function Get-SetupSteps {
           else { 'Not installed. Open Cline needs Node.js and Cline, the coding agent it starts against the local model.' }) `
         $(if (-not $cline) { 'Install Cline' }) $null
 
+    $ccli = Get-ContinuousCli
+    $nodeMajor = 0; if ($node) { [void][int]::TryParse(((& $node.Source --version) -replace '^v' -split '\.')[0], [ref]$nodeMajor) }
+    & $add 'continuous' 'Continuous CLI (optional)' $(if ($ccli -and $nodeMajor -ge 22) { 'ok' } elseif ($ccli) { 'warn' } else { 'todo' }) `
+        $(if ($ccli -and $node -and $nodeMajor -lt 22) { "The Continuous CLI is installed, but it needs Node.js 22 or newer and this is $((& $node.Source --version))." }
+          elseif ($ccli) { 'The Continuous CLI is installed (Open Continuous CLI on the Launch tab). Update gets the newest release.' }
+          else { "Not installed. Open Continuous CLI runs Continuous, the Continue fork, in a terminal on the local model; it comes from the newest release on github.com/$ContinuousRepo and needs Node.js 22 or newer." }) `
+        $(if ($ccli) { 'Update Continuous CLI' } else { 'Install Continuous CLI' }) $null
+
     $lnks = @(Get-ShortcutPaths | Where-Object { Test-Path -LiteralPath $_ })
     & $add 'shortcut' 'Shortcut' $(if ($lnks.Count) { 'ok' } else { 'todo' }) `
         $(if ($lnks.Count) { "Strata Launcher is on the $(($lnks | ForEach-Object { if ($_ -like "$([Environment]::GetFolderPath('Desktop'))*") { 'desktop' } else { 'Start menu' } }) -join ' and ')." } else { 'A Strata Launcher shortcut on the desktop and in the Start menu.' }) `
@@ -2352,6 +2417,36 @@ function Use-SetupFolders {
         Read-Configs; Update-CtxHint; Update-SessionList; Update-ServicePicker; Read-Results
         $script:catalog = $null
     }
+}
+
+function Get-NodeSetup([string]$Winget) {
+    # What an npm step installs first when Node.js is missing -> @{ How (for its question); Body (console script text) }.
+    # $Winget: Invoke-SetupAction's winget command text.
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    $haveWinget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+    $how = if ($node) { '' } elseif ($haveWinget) { 'Node.js LTS (winget, OpenJS.NodeJS.LTS) and ' }
+        else { "Node.js LTS (the portable zip from nodejs.org, into $env:LOCALAPPDATA\Programs\nodejs and onto your PATH) and " }
+    $body = ''
+    if (-not $node -and $haveWinget) { $body += "Write-Host '> $Winget OpenJS.NodeJS.LTS'`r`n$Winget OpenJS.NodeJS.LTS`r`nUpdate-EnvPath`r`n" }
+    elseif (-not $node) {
+        $body += (@(
+            '# the newest LTS release, as nodejs.org lists it'
+            '# into a variable first: piped straight on, Windows PowerShell passes the whole JSON array as one object'
+            '$releases = Invoke-RestMethod -UseBasicParsing https://nodejs.org/dist/index.json'
+            '$v = ($releases | Where-Object { $_.lts } | Select-Object -First 1).version'
+            'if ($v -notmatch ''^v\d+\.\d+\.\d+$'') { throw "Unexpected Node.js version from nodejs.org: $v" }'
+            'Write-Host "Node.js $v (LTS)"'
+            '$base = Join-Path $env:LOCALAPPDATA ''Programs'''
+            'Get-Zip "https://nodejs.org/dist/$v/node-$v-win-x64.zip" (Join-Path $base ''nodejs-unpack'')'
+            'Remove-Item -LiteralPath (Join-Path $base ''nodejs'') -Recurse -Force -ErrorAction SilentlyContinue'
+            'Move-Item -LiteralPath (Join-Path $base "nodejs-unpack\node-$v-win-x64") -Destination (Join-Path $base ''nodejs'')'
+            'Remove-Item -LiteralPath (Join-Path $base ''nodejs-unpack'') -Recurse -Force'
+            'Add-UserPath (Join-Path $base ''nodejs'')'
+            'Add-UserPath (Join-Path $env:APPDATA ''npm'')   # where npm install -g puts cline and continuous'
+            'node --version'
+        ) -join "`r`n") + "`r`n"
+    }
+    return @{ How = $how; Body = $body }
 }
 
 function Invoke-SetupAction([string]$Key, [string]$Label) {
@@ -2501,33 +2596,25 @@ function Invoke-SetupAction([string]$Key, [string]$Label) {
             Start-SetupConsole 'model' 'Strata: installing the recommended model' "Set-Location -LiteralPath '$($root -replace "'", "''")'`r`nWrite-Host '> START-HERE.bat --yes --no-start$($extra -replace "'", "''")'`r`n`$null | & cmd.exe /c START-HERE.bat --yes --no-start$extraPs | Out-Host"
         }
         'cline|Install Cline' {
-            $node = Get-Command node -ErrorAction SilentlyContinue
-            $haveWinget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
-            $nodeHow = if ($node) { '' } elseif ($haveWinget) { 'Node.js LTS (winget, OpenJS.NodeJS.LTS) and ' }
-                else { "Node.js LTS (the portable zip from nodejs.org, into $env:LOCALAPPDATA\Programs\nodejs and onto your PATH) and " }
-            if (-not (Confirm-Setup "Install $($nodeHow)Cline (npm install -g cline) for your account?")) { return }
-            $body = ''
-            if (-not $node -and $haveWinget) { $body += "Write-Host '> $winget OpenJS.NodeJS.LTS'`r`n$winget OpenJS.NodeJS.LTS`r`nUpdate-EnvPath`r`n" }
-            elseif (-not $node) {
-                $body += (@(
-                    '# the newest LTS release, as nodejs.org lists it'
-                    '# into a variable first: piped straight on, Windows PowerShell passes the whole JSON array as one object'
-                    '$releases = Invoke-RestMethod -UseBasicParsing https://nodejs.org/dist/index.json'
-                    '$v = ($releases | Where-Object { $_.lts } | Select-Object -First 1).version'
-                    'if ($v -notmatch ''^v\d+\.\d+\.\d+$'') { throw "Unexpected Node.js version from nodejs.org: $v" }'
-                    'Write-Host "Node.js $v (LTS)"'
-                    '$base = Join-Path $env:LOCALAPPDATA ''Programs'''
-                    'Get-Zip "https://nodejs.org/dist/$v/node-$v-win-x64.zip" (Join-Path $base ''nodejs-unpack'')'
-                    'Remove-Item -LiteralPath (Join-Path $base ''nodejs'') -Recurse -Force -ErrorAction SilentlyContinue'
-                    'Move-Item -LiteralPath (Join-Path $base "nodejs-unpack\node-$v-win-x64") -Destination (Join-Path $base ''nodejs'')'
-                    'Remove-Item -LiteralPath (Join-Path $base ''nodejs-unpack'') -Recurse -Force'
-                    'Add-UserPath (Join-Path $base ''nodejs'')'
-                    'Add-UserPath (Join-Path $env:APPDATA ''npm'')   # where npm install -g puts cline'
-                    'node --version'
-                ) -join "`r`n") + "`r`n"
-            }
+            $n = Get-NodeSetup $winget
+            if (-not (Confirm-Setup "Install $($n.How)Cline (npm install -g cline) for your account?")) { return }
+            $body = $n.Body
             $body += "Write-Host '> npm install -g cline'`r`n& npm install -g cline | Out-Host"
             Start-SetupConsole 'cline' 'Installing Cline' $body
+        }
+        { $_ -in 'continuous|Install Continuous CLI', 'continuous|Update Continuous CLI' } {
+            $n = Get-NodeSetup $winget
+            if (-not (Confirm-Setup "Install $($n.How)the Continuous CLI for your account? It is the npm package on the newest release of github.com/$ContinuousRepo (continuous-cli-<version>.tgz), installed with npm install -g.")) { return }
+            $body = $n.Body + (@(
+                '# the CLI package on the newest release'
+                "`$rel = Invoke-RestMethod -UseBasicParsing https://api.github.com/repos/$ContinuousRepo/releases/latest"
+                '$asset = @($rel.assets | Where-Object { $_.name -match ''^continuous-cli-.+\.tgz$'' }) | Select-Object -First 1'
+                'if (-not $asset) { throw "$($rel.tag_name) has no continuous-cli-*.tgz" }'
+                'Write-Host "> npm install -g $($asset.browser_download_url)"'
+                '& npm install -g $asset.browser_download_url | Out-Host'
+                'continuous --version'
+            ) -join "`r`n")
+            Start-SetupConsole 'continuous' 'Installing the Continuous CLI' $body
         }
         'shortcut|Create shortcuts' {
             $ws = New-Object -ComObject WScript.Shell
@@ -4123,6 +4210,7 @@ $ui.VsixBrowse.Add_Click({
     if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $ui.VsixBox.Text = $dialog.FileName }
 })
 $ui.VsCodeBtn.Add_Click({ Open-VsCode })
+$ui.ContinuousCliBtn.Add_Click({ Open-VsCode -Cli })
 $ui.ContinueCfgBtn.Add_Click({
     $f = Get-ContinueConfigPath
     if (Test-Path -LiteralPath $f) { Start-Process -FilePath (Get-CodeCommand) -ArgumentList (QPath $f) -WindowStyle Hidden }
@@ -4376,7 +4464,7 @@ $timer.Add_Tick({
                 $plan = [bool]$script:clinePending.Plan
                 $target = $script:clinePending.Target
                 $script:clinePending = $null
-                if ($target -eq 'vscode') { Start-VsCode $row } else { Start-Cline $row -Plan:$plan }
+                if ($target -eq 'vscode') { Start-VsCode $row } elseif ($target -eq 'cli') { Start-ContinuousCli $row } else { Start-Cline $row -Plan:$plan }
             } elseif (((Get-Date) - $script:clinePending.T0).TotalMinutes -gt $LoadTimeoutMinutes) {
                 $script:clinePending = $null
                 Set-Status "$($row.Model) did not load in time; Cline was not opened."

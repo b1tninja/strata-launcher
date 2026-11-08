@@ -14,6 +14,7 @@ command-line tool.
 | **Python and a PC check** | Python through [uv](https://github.com/astral-sh/uv): one small program that downloads a standalone copy of the Python version Strata pins and creates Strata's `.venv` with it, in seconds and without an installer. Then Strata's own `START-HERE.bat --check` installs its packages and reports what this PC can run. |
 | **A model** | Pick one from the **Models** tab, with what each needs and whether it fits this PC, or let Strata choose the recommended size for your RAM. Strata downloads it from Hugging Face itself (58-190 GB, resumable). |
 | **Node.js and Cline** | For **Open Cline**: Node.js through winget or its portable zip, then `npm install -g cline`. |
+| **Continuous CLI** | For **Open Continuous CLI**: Node.js the same way if it is missing, then `npm install -g` of the CLI package on the newest [Continuous release](https://github.com/b1tninja/continuous/releases). **Update** reinstalls from the newest release. |
 | **Shortcuts** | Desktop and Start menu. |
 
 On first start, Strata Launcher lists the Strata folders it finds on the PC. Choose an empty or new
