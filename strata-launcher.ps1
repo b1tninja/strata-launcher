@@ -1,6 +1,6 @@
 # Strata launcher and benchmark GUI. Finds the model configs (strata-*.json) of a Strata
 # folder, starts / stops their servers, runs tools\strata_bench.py against one or several
-# of them, lists the results, and opens Cline on a running server.
+# of them, lists the results, and opens VS Code with Continuous on a running server.
 param(
     [string]$StrataRoot,
     # -Service: run one config's server on demand, hidden (the Service tab's scheduled task starts this).
@@ -24,9 +24,6 @@ if (-not (Test-Path -LiteralPath $SettingsPath) -and (Test-Path -LiteralPath $ol
 $TempDir = Join-Path $env:TEMP 'strata-launcher'
 $ThinkingLevels = @('none', 'low', 'medium', 'high', 'xhigh')
 $LoadTimeoutMinutes = 30
-# Tokens held back from the context Cline is told about - see Get-ClineContext.
-$ClineContextReserve = 4096
-$ClineReservePercent = 2      # the Headroom box
 $TrainedContext = 262144      # the model's trained window: past it Strata needs rope scaling
 $ServiceLog = Join-Path $PSScriptRoot 'strata-service.log'
 $ServiceErrLog = Join-Path $PSScriptRoot 'strata-service.err.log'
@@ -91,7 +88,7 @@ if ($Service) {
     exit $proc.ExitCode
 }
 
-# WPF needs STA; relaunch the same way the Cline shortcuts do.
+# WPF needs STA; relaunch the same way the shortcuts do.
 if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
     $forward = @('-STA', '-ExecutionPolicy', 'Bypass', '-File', (QPath $PSCommandPath))
     if ($StrataRoot) { $forward += @('-StrataRoot', (QPath (Clean-Path $StrataRoot))) }
@@ -106,19 +103,15 @@ Add-Type -AssemblyName System.Net.Http
 # ------------------------------------------------------------------------------------ settings
 $defaults = [ordered]@{
     StrataRoot    = ''
-    ClineScript   = (Join-Path $PSScriptRoot 'cline-strata.ps1')
-    ClineFolder   = [Environment]::GetFolderPath('UserProfile')
+    ProjectFolder = [Environment]::GetFolderPath('UserProfile')
+    ClineFolder   = ''   # the project folder's name before Cline support was dropped: read once
     Thinking      = ''
     PlanThinking  = 'xhigh'
-    ContinueVsix  = ''
     Context       = ''
     ExtraArgs     = ''
     VramReserve   = ''
     FitMaxTokens  = $true
-    ResumeFirst   = $false
     SvcHibernate  = $false
-    ReservePercent = '2'
-    HeadroomV2    = $false   # a saved 10 is the old default: moved to 2 once (see Get-ClineContext)
     OpenWeb       = $false
     Minimized     = $false
     UnloadOllama  = $true
@@ -281,6 +274,39 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
               <Button x:Name="ArchiveModelBtn" Content="Archive..." ToolTip="Move this model into the archive (Models tab): copied and checked first, then removed from the data folder. Install from archive brings it back without downloading."/>
               <Button x:Name="RemoveModelBtn" Content="Remove model..." ToolTip="Delete this model's files and config to free the disk space (Strata decides what is safe to delete; files another model uses stay)"/>
             </WrapPanel>
+            <Separator Margin="0,16,0,12"/>
+            <TextBlock Text="Code with Continuous" FontWeight="SemiBold" Margin="0,0,0,8"/>
+            <Grid Margin="0,0,0,6">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Project folder" Style="{StaticResource Label}"/>
+              <TextBox Grid.Column="1" x:Name="FolderBox"/>
+              <Button Grid.Column="2" x:Name="FolderBrowse" Content="Browse..." Margin="8,0,0,0"/>
+            </Grid>
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+              <TextBlock Width="110" Text="Thinking" Style="{StaticResource Label}"/>
+              <ComboBox x:Name="ThinkingBox" Width="120" Margin="0,0,16,0"
+                        ToolTip="The thinking level of the act model in the Strata config."/>
+              <TextBlock Text="Plan thinking" Style="{StaticResource Label}"/>
+              <ComboBox x:Name="PlanThinkingBox" Width="120"
+                        ToolTip="The thinking level of the plan model in the Strata config."/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="110,10,0,0">
+              <Button x:Name="VsCodeBtn" Content="Open VS Code" FontWeight="SemiBold" Padding="18,6" Margin="0,0,8,0"
+                      ToolTip="Installs Continuous from the VS Code Marketplace when it is missing, writes the Strata config for the selected model (a plan and an act model, and Tab autocomplete), starts the server if needed, then opens VS Code in the project folder."/>
+              <Button x:Name="ContinuousCliBtn" Content="Open Continuous CLI" Margin="0,0,8,0"
+                      ToolTip="Continuous in a terminal (its terminal UI, the command continuous): writes the same config, starts the server if needed, then opens a PowerShell window in the project folder running continuous --config on it. The Setup tab's Continuous CLI step installs it from the newest release."/>
+            </StackPanel>
+            <TextBlock x:Name="VsCodeHint" Style="{StaticResource Hint}" Text="In Continuous, pick the &quot;Strata&quot; config in the configs dropdown, then the plan or act model. Tab autocomplete uses the same server. Continuous comes from the VS Code Marketplace, which keeps it up to date."/>
+            <WrapPanel Margin="110,2,0,0">
+              <Button x:Name="ContinueCfgBtn" Content="Open Strata config" Margin="0,0,8,0"
+                      ToolTip="Opens the strata.yaml Open VS Code or Open Continuous CLI wrote last."/>
+              <Button x:Name="DevVsixBtn" Content="Install dev build..."
+                      ToolTip="For testing: installs a Continuous .vsix you pick (a local build, or a CI artifact) over the Marketplace one. Nothing is saved; the Marketplace version replaces it when a newer one comes out, or uninstall it in VS Code to go back."/>
+            </WrapPanel>
 
             <Separator Margin="0,16,0,12"/>
             <TextBlock Text="Sessions: the conversation the engine holds, saved to disk and restored in seconds instead of read again" FontWeight="SemiBold" Margin="0,0,0,8"/>
@@ -308,66 +334,6 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
             </WrapPanel>
             <TextBlock x:Name="SessionHint" Style="{StaticResource Hint}"/>
 
-            <Separator Margin="0,16,0,12"/>
-            <TextBlock Text="Cline" FontWeight="SemiBold" Margin="0,0,0,8"/>
-            <Grid Margin="0,0,0,6">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="110"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-              </Grid.ColumnDefinitions>
-              <TextBlock Text="Project folder" Style="{StaticResource Label}"/>
-              <TextBox Grid.Column="1" x:Name="FolderBox"/>
-              <Button Grid.Column="2" x:Name="FolderBrowse" Content="Browse..." Margin="8,0,0,0"/>
-            </Grid>
-            <Grid Margin="0,0,0,6">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="110"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-              </Grid.ColumnDefinitions>
-              <TextBlock Text="Launcher script" Style="{StaticResource Label}"/>
-              <TextBox Grid.Column="1" x:Name="ClineScriptBox"/>
-              <Button Grid.Column="2" x:Name="ClineScriptBrowse" Content="Browse..." Margin="8,0,0,0"/>
-            </Grid>
-            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-              <TextBlock Width="110" Text="Thinking" Style="{StaticResource Label}"/>
-              <ComboBox x:Name="ThinkingBox" Width="200" Margin="0,0,16,0"/>
-              <TextBlock Text="Headroom" Style="{StaticResource Label}"/>
-              <ComboBox x:Name="ReserveBox" Width="70" Margin="0,0,16,0"
-                        ToolTip="Share of the context Cline is not told about (at least 4096 tokens). Cline compacts at 90% of what it is told, and counts characters / 3, which runs ~30% over Qwen's real count on code - so it compacts early anyway; it corrects an undercount by itself after each request. 2% keeps the most of the window; raise it only if a prompt is ever refused as too long."/>
-              <Button x:Name="ClineBtn" Content="Open Cline" FontWeight="SemiBold"/>
-            </StackPanel>
-            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-              <TextBlock Width="110" Text="Plan thinking" Style="{StaticResource Label}"/>
-              <ComboBox x:Name="PlanThinkingBox" Width="200" Margin="0,0,16,0"
-                        ToolTip="The thinking level of a planning session. Cline CLI keeps one level per session (Tab to Act does not change it), so plan in a session started here and act in one from Open Cline."/>
-              <Button x:Name="PlanClineBtn" Content="Plan in Cline"
-                      ToolTip="Opens Cline in Plan mode (its --plan) with the Plan thinking level, on the same server and folder as Open Cline."/>
-            </StackPanel>
-            <CheckBox x:Name="ResumeChk" Margin="110,6,0,0" Content="Resume the latest session first (when the model has one)"/>
-            <TextBlock Style="{StaticResource Hint}" Text="Starts the selected server if it is not running, waits until the model is loaded, then opens Cline in the folder pointed at that server."/>
-            <Separator Margin="0,10"/>
-            <TextBlock Text="VS Code with Continue" FontWeight="SemiBold" Margin="0,0,0,6"/>
-            <Grid Margin="0,0,0,4">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="110"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-              </Grid.ColumnDefinitions>
-              <TextBlock Text="Extension VSIX" Style="{StaticResource Label}"/>
-              <TextBox Grid.Column="1" x:Name="VsixBox"
-                       ToolTip="Optional. Leave it empty to install Continuous from the VS Code Marketplace, which keeps it up to date. Set it to install a package instead: a .vsix file, or a folder (the newest continu*.vsix in it is used), such as a local build (npm run package in the fork's extensions\vscode) or a release's continuous-win32-x64-*.vsix for a PC without the Marketplace."/>
-              <Button Grid.Column="2" x:Name="VsixBrowse" Content="Browse..." Margin="8,0,0,0"/>
-            </Grid>
-            <StackPanel Orientation="Horizontal" Margin="110,4,0,0">
-              <Button x:Name="VsCodeBtn" Content="Open VS Code" FontWeight="SemiBold" Margin="0,0,8,0"
-                      ToolTip="Installs Continuous from the VS Code Marketplace when it is missing (or the Extension VSIX, when set), writes configs/strata.yaml in ~/.continuous (Continuous) or ~/.continue for the selected model (a plan entry with the Plan thinking level and an act entry with the Thinking level), starts the server if needed, then opens VS Code in the project folder."/>
-              <Button x:Name="ContinuousCliBtn" Content="Open Continuous CLI" Margin="0,0,8,0"
-                      ToolTip="Continuous in a terminal (its terminal UI, the command continuous): writes the same strata.yaml, starts the server if needed, then opens a PowerShell window in the project folder running continuous --config on it. The Setup tab's Continuous CLI step installs it."/>
-              <Button x:Name="ContinueCfgBtn" Content="Open Continue config"/>
-            </StackPanel>
-            <TextBlock x:Name="VsCodeHint" Style="{StaticResource Hint}" Text="In Continue, pick the &quot;Strata&quot; config in the configs dropdown, then the plan or act model. Tab autocomplete uses the same server."/>
           </StackPanel>
           </ScrollViewer>
         </TabItem>
@@ -518,7 +484,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
         <TabItem Header="  Service  " x:Name="ServiceTab">
           <StackPanel Margin="12">
             <TextBlock TextWrapping="Wrap" Foreground="#FF444444" Margin="0,0,0,12"
-                       Text="Runs one model on demand in the background: its server starts without loading the model (--lazy), the first request (Cline, the web page, Load now) loads it, and it unloads again after the idle time (--idle-unload), so the VRAM is free while nothing uses it. A scheduled task for your user runs it, hidden; it uses the config as it is (no launch overrides)."/>
+                       Text="Runs one model on demand in the background: its server starts without loading the model (--lazy), the first request (VS Code, the web page, Load now) loads it, and it unloads again after the idle time (--idle-unload), so the VRAM is free while nothing uses it. A scheduled task for your user runs it, hidden; it uses the config as it is (no launch overrides)."/>
             <Grid Margin="0,0,0,8">
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="130"/>
@@ -534,7 +500,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
             </StackPanel>
             <CheckBox x:Name="SvcLogonChk" Content="Start at Windows logon" Margin="130,0,0,6"/>
             <CheckBox x:Name="SvcHibernateChk" Margin="130,0,0,12"
-                      Content="Save the conversation before unloading (needs a session folder; Resume or Open Cline brings it back)"/>
+                      Content="Save the conversation before unloading (needs a session folder; Resume brings it back)"/>
             <WrapPanel Margin="0,0,0,12">
               <Button x:Name="SvcApplyBtn" Content="Install / update" FontWeight="SemiBold"/>
               <Button x:Name="SvcRemoveBtn" Content="Remove"/>
@@ -611,7 +577,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
         <TabItem Header="  Setup  " x:Name="SetupTab">
           <DockPanel Margin="12">
             <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#FF444444" Margin="0,0,0,10"
-                       Text="Everything Strata and Strata Launcher need, one step at a time. Nothing is installed until you press a step's button; it says what it will do first, and long steps run in their own window. Strata's own setup (START-HERE.bat) installs Python, the engine and the model; this tab gets what it does not: Git, Strata itself, Node.js and Cline."/>
+                       Text="Everything Strata and Strata Launcher need, one step at a time. Nothing is installed until you press a step's button; it says what it will do first, and long steps run in their own window. Strata's own setup (START-HERE.bat) installs Python, the engine and the model; this tab gets what it does not: Git, Strata itself, and the Continuous CLI."/>
             <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="120"/>
@@ -686,7 +652,7 @@ $script:draftAt = @{}       # port -> when it was last asked
 $script:started = @{}       # port -> the cmd.exe process this GUI started
 $script:startedRow = @{}    # port -> the config path that process serves
 $script:startedCfg = @{}    # port -> the config file it was started with (a %TEMP% copy when overridden)
-$script:clinePending = $null
+$script:openPending = $null
 $script:job = $null
 $script:pcFacts = $null      # the PC tab's last reading (Get-PcFacts)
 
@@ -1190,7 +1156,7 @@ function Update-Health {
     if ($changed) { $ui.ConfigList.Items.Refresh() }
 }
 
-# ------------------------------------------------------------------------------------ Cline
+# ------------------------------------------------------------------------------------ model context
 function Get-RowContext($Row) {
     # The context this model can really serve, in tokens, or 0 when nothing says.
     # Order of trust: the running server's own answer (it knows what its engine actually loaded,
@@ -1206,25 +1172,6 @@ function Get-RowContext($Row) {
     $c = Get-ArgValue $Row.Cfg.args '--max-context'
     if ($c -and $c -match '^\d+$') { return [int64]$c }
     return 0
-}
-
-function Get-ClineContext([int64]$Ctx) {
-    # The number Cline is told the window is: a little under what the server really has. Strata never
-    # truncates (a prompt over the window is refused), so Cline must compact first. Cline CLI 3
-    # (@cline/core) compacts once its estimate reaches 0.9x this number; the estimate is JSON chars / 3,
-    # and it scales an undercount up by the prompt_tokens the server reported for the previous request
-    # (never an overcount down). On Qwen and a code session that estimate runs ~30% high: told 471,859
-    # of a 524,288 window, it compacted at 325,817 real tokens. So the reserve no longer has an
-    # undercount to cover - Cline's own 10% and its overcount already hold the prompt well under the
-    # window - and a large one only compacts earlier still. It is a small share ($ClineReservePercent,
-    # the Headroom box, default 2), never under $ClineContextReserve. (The older Cline undercounted,
-    # ~chars/4 with no correction, and sent prompts ~4.5% over a 4096 reserve: the reason it was 10%.)
-    # cline-strata.ps1 runs the same formula (tests\context-tests.ps1 keeps the two in step) and the
-    # status bar shows both numbers when Cline opens.
-    if ($Ctx -le 0) { return 0 }
-    $half = [int64][Math]::Max(1024, [int][Math]::Ceiling($Ctx * 0.5))
-    $reserve = [Math]::Max([int64]$ClineContextReserve, [int64][Math]::Ceiling($Ctx * $ClineReservePercent / 100.0))
-    return [Math]::Max($half, $Ctx - $reserve)
 }
 
 function Update-CtxHint {
@@ -1247,39 +1194,12 @@ function Update-CtxHint {
     }
     $parts += if ($ctx -le $TrainedContext) { 'no rope scaling (inside the trained 262,144)' }
         else { 'past the trained 262,144: yarn x{0} is added - EXPERIMENTAL, the model computes slightly differently at every position' -f (Get-RopeScale $ctx) }
-    $parts += 'Cline is told {0:n0} tokens' -f (Get-ClineContext $ctx)
     $hint = ($parts -join ';  ') + '.'
     if ($row.Log -and (Test-Path -LiteralPath $row.Log)) {
         $want = Select-String -LiteralPath $row.Log -Pattern 'add --vram-reserve-mib (\d+)' | Select-Object -Last 1
         if ($want) { $hint += "  The engine log asked for --vram-reserve-mib $($want.Matches[0].Groups[1].Value) (GPU memory ran low)." }
     }
     $ui.CtxHint.Text = $hint
-}
-
-function Start-Cline($Row, [switch]$Plan) {
-    # -Plan: Cline in Plan mode with the Plan thinking level (Cline CLI keeps one level per session).
-    $launcher = Clean-Path $ui.ClineScriptBox.Text
-    $folder = Clean-Path $ui.FolderBox.Text
-    if (-not (Test-Path -LiteralPath $launcher)) {
-        Set-Status "Cline launcher not found: $launcher - pick another in the Cline launcher box."
-        return
-    }
-    # The context comes from what this model really serves - never from a guess. A context bigger
-    # than the engine's is worse than a small one: Cline keeps the conversation until 0.9 of the
-    # window it was given, the server never truncates, so the first prompt over the engine's
-    # window is the last one that answers (a 262144 default here stuck a 131072 model that way).
-    $raw = Get-RowContext $Row
-    if ($raw -le 0) {
-        Set-Status "Cannot tell $($Row.Model)'s context: no --max-context in its config and the server does not say. Cline was not opened."
-        return
-    }
-    $clArgs = "-NoExit -STA -ExecutionPolicy Bypass -File $(QPath $launcher) -Folder $(QPath $folder) -Model `"$($Row.Model)`" " +
-        "-StrataBase `"$(Get-BaseUrl $Row)`" -Context $raw -ReservePercent $ClineReservePercent -StrataRoot $(QPath (Get-Root))"
-    $thinking = [string]$(if ($Plan) { $ui.PlanThinkingBox.SelectedItem } else { $ui.ThinkingBox.SelectedItem })
-    if ($ThinkingLevels -contains $thinking) { $clArgs += " -Thinking $thinking" }
-    if ($Plan) { $clArgs += ' -Plan' }
-    Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $clArgs -WorkingDirectory $folder
-    Set-Status ("Opened Cline{0} in $folder on $($Row.Model): Cline's context {1:n0}, the server has {2:n0} tokens." -f $(if ($Plan) { ' (Plan mode)' } else { '' }), (Get-ClineContext $raw), $raw)
 }
 
 # ------------------------------------------------------------------------------------ VS Code + Continue
@@ -1291,7 +1211,6 @@ function Start-Cline($Row, [switch]$Plan) {
 # (b1tninja.continued) use ~/.continue. Both honour their *_GLOBAL_DIR variables. No Id: the file Open VS Code
 # wrote last.
 $ContinuousIds = @('b1tninja.continuous')
-$ContinueIds = @('b1tninja.continuous', 'b1tninja.continued', 'continue.continue')   # preferred first
 $OldForkIds = @('b1tninja.continued', 'b1tninja.continuing')   # the fork's earlier IDs: Continuous replaces them
 function Get-ContinueGlobalDir([string]$Id) {
     $old = Join-Path $env:USERPROFILE '.continue'
@@ -1316,27 +1235,6 @@ function Get-CodeCommand {
         if (Test-Path -LiteralPath $p) { return $p }
     }
     return $null
-}
-
-function Get-ContinueVsix([string]$Path) {
-    # A .vsix, or the newest continu*.vsix in a folder (upstream's continue-*, the fork's continuous-* and its older
-    # continued-*). -> @{ Path; Id (publisher.name); Version }, both read from the package's manifest, or $null.
-    if (-not $Path) { return $null }
-    $f = if (Test-Path -LiteralPath $Path -PathType Leaf) { Get-Item -LiteralPath $Path }
-         elseif (Test-Path -LiteralPath $Path -PathType Container) {
-             Get-ChildItem -LiteralPath $Path -Filter 'continu*.vsix' -File | Sort-Object LastWriteTime | Select-Object -Last 1 }
-    if (-not $f) { return $null }
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    try {
-        $zip = [IO.Compression.ZipFile]::OpenRead($f.FullName)
-        try {
-            $entry = $zip.GetEntry('extension.vsixmanifest')
-            $reader = New-Object IO.StreamReader($entry.Open())
-            try { $id = ([xml]$reader.ReadToEnd()).PackageManifest.Metadata.Identity } finally { $reader.Close() }
-        } finally { $zip.Dispose() }
-    } catch { return $null }
-    if (-not $id) { return $null }
-    return [pscustomobject]@{ Path = $f.FullName; Id = "$($id.Publisher).$($id.Id)"; Version = [string]$id.Version }
 }
 
 function Invoke-CodeCli([string]$Code, [string]$Arguments, [int]$TimeoutSec = 180) {
@@ -1463,53 +1361,33 @@ function Start-VsCode($Row) {
     $folder = Clean-Path $ui.FolderBox.Text
     $raw = Get-RowContext $Row
     if ($raw -le 0) { Set-Status "Cannot tell $($Row.Model)'s context; VS Code was not opened."; return }
-    # The extension: Continuous (b1tninja.continuous) from the VS Code Marketplace, which then keeps it up to date.
-    # Extension VSIX, when set, installs that package instead (a local build, or offline). Upstream Continue
-    # (continue.continue) is left alone: Continuous's settings and commands are its own (continuous.*), so the two
-    # do not clash. The fork's earlier IDs do clash with upstream, and Continuous replaces them: the launcher offers
-    # to uninstall them, once per run.
-    $vsix = Get-ContinueVsix (Clean-Path $ui.VsixBox.Text)
+    # The extension: Continuous (b1tninja.continuous), from the VS Code Marketplace, which then keeps it up to date.
+    # Upstream Continue (continue.continue) is left alone: Continuous's settings and commands are its own
+    # (continuous.*), so the two do not clash. The fork's earlier IDs do clash with upstream, and Continuous
+    # replaces them: the launcher offers to uninstall them, once per run.
+    $id = $ContinuousIds[0]
     $exts = Get-InstalledExtensions $code
-    $id = if ($vsix) { $vsix.Id.ToLower() } else { $ContinuousIds[0] }
     $have = $exts[$id]
-    $install = { param($what, $label)
-        Set-Status "Installing $label..."
+    if (-not $have) {
+        Set-Status "Installing Continuous ($id) from the VS Code Marketplace..."
         $window.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)   # show it first
-        $out = Invoke-CodeCli $code "--install-extension $what --force"
-        $script:installOut = $out
-        (Get-InstalledExtensions $code)[$id] }
-    if ($vsix -and $have -ne $vsix.Version) {
-        $have = & $install (QPath $vsix.Path) "$($vsix.Id) $($vsix.Version) from $($vsix.Path)"
-        if (-not $have) { [System.Windows.MessageBox]::Show("$($vsix.Id) did not install:`n`n$($script:installOut)", 'Strata') | Out-Null; return }
-    } elseif (-not $have) {
-        $have = & $install $id "Continuous ($id) from the VS Code Marketplace"
-        if (-not $have) {
-            # offline, or the Marketplace refused: an extension already here still works
-            $fallback = @($ContinueIds | Where-Object { $exts[$_] }) | Select-Object -First 1
-            if (-not $fallback) {
-                [System.Windows.MessageBox]::Show("Continuous ($id) did not install from the VS Code Marketplace:`n`n$($script:installOut)`n`nWithout the Marketplace, pick its .vsix from github.com/$ContinuousRepo/releases in Extension VSIX.", 'Strata') | Out-Null
-                return
-            }
-            $id = $fallback; $have = $exts[$id]
-        }
+        $out = Invoke-CodeCli $code "--install-extension $id"
         $exts = Get-InstalledExtensions $code
+        $have = $exts[$id]
+        if (-not $have) { [System.Windows.MessageBox]::Show("Continuous ($id) did not install from the VS Code Marketplace:`n`n$out", 'Strata') | Out-Null; return }
     }
-    $old = @($OldForkIds | Where-Object { $_ -ne $id -and $exts[$_] })
-    if ($old -and $ContinuousIds -contains $id -and -not $script:askedOldForks) {
+    $old = @($OldForkIds | Where-Object { $exts[$_] })
+    if ($old -and -not $script:askedOldForks) {
         $script:askedOldForks = $true
         $q = "$($old -join ' and ') $(if ($old.Count -gt 1) { 'are' } else { 'is' }) installed: the fork's earlier extension, which Continuous replaces. Uninstall $(if ($old.Count -gt 1) { 'them' } else { 'it' }) from VS Code?`n`n" +
              'Your settings and ~/.continue are kept: Continuous copies them on its first start.'
         if ([System.Windows.MessageBox]::Show($q, 'Strata', 'YesNo') -eq 'Yes') {
             foreach ($o in $old) { [void](Invoke-CodeCli $code "--uninstall-extension $o" 60) }
-            $exts = Get-InstalledExtensions $code
         }
     }
-    $other = if ($ContinuousIds -contains $id) { @() } else {
-        @('continue.continue') + $OldForkIds | Where-Object { $_ -ne $id -and $exts[$_] } }
     $cfg = Write-ContinueConfig $Row $id $raw
     Start-Process -FilePath $code -ArgumentList (QPath $folder) -WindowStyle Hidden
-    $warn = if ($other) { " $($other -join ', ') is installed too: disable it in VS Code, they clash." } else { '' }
-    Set-Status ("Opened VS Code in $folder with $id $have; {0} points at $($Row.Model) ({1:n0} tokens).$warn" -f $cfg, $raw)
+    Set-Status ("Opened VS Code in $folder with Continuous $have; {0} points at $($Row.Model) ({1:n0} tokens)." -f $cfg, $raw)
 }
 
 function Open-VsCode([switch]$Cli) {
@@ -1521,7 +1399,7 @@ function Open-VsCode([switch]$Cli) {
     if ($Cli -and -not (Get-ContinuousCli)) { Set-Status 'The Continuous CLI is not installed: the Setup tab''s Continuous CLI step installs it.'; return }
     if (Test-RowReady $row) { if ($Cli) { Start-ContinuousCli $row } else { Start-VsCode $row }; return }
     if (-not (Start-Server $row)) { return }
-    $script:clinePending = @{ Row = $row; T0 = Get-Date; Target = $(if ($Cli) { 'cli' } else { 'vscode' }) }
+    $script:openPending = @{ Row = $row; T0 = Get-Date; Target = $(if ($Cli) { 'cli' } else { 'vscode' }) }
     Set-Status "$(if ($Cli) { 'The Continuous CLI' } else { 'VS Code' }) opens once $($row.Model) has loaded..."
 }
 
@@ -1972,7 +1850,7 @@ function Update-ServicePicker {
 # ------------------------------------------------------------------------------------ setup (first run)
 # Finds or fetches everything this GUI drives. Strata's own START-HERE.bat installs Python, the engine
 # and the model (from Hugging Face, resumable); this gets what it does not: Git, the Strata checkout,
-# Node.js and Cline. Long steps run in a console of their own; the step list re-checks itself.
+# Node.js and the Continuous CLI. Long steps run in a console of their own; the step list re-checks itself.
 $StrataRepo = 'https://github.com/Niko1221/Strata'
 $script:hw = $null
 $script:setupProcs = @{}
@@ -1995,8 +1873,8 @@ function Test-StrataFolder([string]$Path) {
                   (Test-Path -LiteralPath ([IO.Path]::Combine($Path, 'serve\server.py'))))
 }
 
-# The folders this GUI uses are kept per user in the registry (no admin rights), where the Cline
-# launcher and install.ps1 find them too: StrataRoot, DataDir, AppDir.
+# The folders this GUI uses are kept per user in the registry (no admin rights), where install.ps1
+# finds them too: StrataRoot, DataDir, AppDir.
 $RegKey = 'HKCU:\Software\StrataLauncher'
 # Named strata-gui before (HKCU\Software\StrataGui, GuiDir): carry its values over once.
 if (-not (Test-Path $RegKey) -and (Test-Path 'HKCU:\Software\StrataGui')) {
@@ -2289,21 +2167,18 @@ function Get-SetupSteps {
         $(if ($venv) { 'Choose a model...' }) $(if ($venv) { 'Recommended for this PC' })
 
     $node = Get-Command node -ErrorAction SilentlyContinue
-    $cline = Get-Command cline -ErrorAction SilentlyContinue
-    if (-not $cline) { $cline = Get-Item -Path (Join-Path $env:APPDATA 'npm\cline.cmd') -ErrorAction SilentlyContinue }
-    & $add 'cline' 'Node.js and Cline (optional)' $(if ($cline) { 'ok' } else { 'todo' }) `
-        $(if ($cline) { "Cline is installed$(if ($node) { ", Node.js $((& $node.Source --version))" })." }
-          elseif ($node) { "Node.js $((& $node.Source --version)) is installed; Cline (the coding agent Open Cline starts) is not." }
-          else { 'Not installed. Open Cline needs Node.js and Cline, the coding agent it starts against the local model.' }) `
-        $(if (-not $cline) { 'Install Cline' }) $null
-
     $ccli = Get-ContinuousCli
     $nodeMajor = 0; if ($node) { [void][int]::TryParse(((& $node.Source --version) -replace '^v' -split '\.')[0], [ref]$nodeMajor) }
-    & $add 'continuous' 'Continuous CLI (optional)' $(if ($ccli -and $nodeMajor -ge 22) { 'ok' } elseif ($ccli) { 'warn' } else { 'todo' }) `
-        $(if ($ccli -and $node -and $nodeMajor -lt 22) { "The Continuous CLI is installed, but it needs Node.js 22 or newer and this is $((& $node.Source --version))." }
-          elseif ($ccli) { 'The Continuous CLI is installed (Open Continuous CLI on the Launch tab). Update gets the newest release.' }
-          else { "Not installed. Open Continuous CLI runs Continuous, the Continue fork, in a terminal on the local model; it comes from the newest release on github.com/$ContinuousRepo and needs Node.js 22 or newer." }) `
-        $(if ($ccli) { 'Update Continuous CLI' } else { 'Install Continuous CLI' }) $null
+    $rel = Get-ContinuousRelease
+    $cver = if ($ccli) { Get-ContinuousCliVersion $ccli }
+    $behind = $ccli -and $rel.Version -and $cver -and (Compare-Version $cver $rel.Version) -lt 0
+    $latest = if ($rel.Version) { " The newest release is $($rel.Version)." } elseif ($rel.Error) { " Could not check GitHub for the newest release ($($rel.Error))." } else { '' }
+    & $add 'continuous' 'Continuous CLI (optional)' $(if ($ccli -and $nodeMajor -lt 22) { 'warn' } elseif ($behind -or -not $ccli) { 'todo' } else { 'ok' }) `
+        $(if ($ccli -and $node -and $nodeMajor -lt 22) { "The Continuous CLI $cver is installed, but it needs Node.js 22 or newer and this is $((& $node.Source --version))." }
+          elseif ($behind) { "The Continuous CLI $cver is installed; $($rel.Version) is out: Update installs it." }
+          elseif ($ccli) { "The Continuous CLI $cver is installed (Open Continuous CLI on the Launch tab).$latest" }
+          else { "Not installed. Open Continuous CLI runs Continuous in a terminal on the local model; it comes from the newest release on github.com/$ContinuousRepo and needs Node.js 22 or newer.$latest" }) `
+        $(if (-not $ccli) { 'Install Continuous CLI' } elseif ($behind) { 'Update Continuous CLI' }) $(if ($ccli -and -not $behind) { 'Update Continuous CLI' })
 
     $lnks = @(Get-ShortcutPaths | Where-Object { Test-Path -LiteralPath $_ })
     & $add 'shortcut' 'Shortcut' $(if ($lnks.Count) { 'ok' } else { 'todo' }) `
@@ -2377,6 +2252,40 @@ $SetupConsoleHelpers = @(
 )
 
 $script:updInfo = @{}
+
+function Get-ContinuousRelease {
+    # The newest Continuous release on GitHub: at most every 15 minutes, or when "Check again" clears the cache.
+    # -> @{ Version (e.g. 2.4.4, from the v2.4.4-vscode tag); CliUrl (its continuous-cli-*.tgz, or ''); Error }
+    $c = $script:relInfo
+    if ($c -and ((Get-Date) - $c.At).TotalMinutes -lt 15) { return $c }
+    $r = @{ At = Get-Date; Version = ''; CliUrl = ''; Error = '' }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $j = Invoke-RestMethod -UseBasicParsing -TimeoutSec 10 "https://api.github.com/repos/$ContinuousRepo/releases/latest"
+        if ($j.tag_name -match '^v(\d+(\.\d+)+)') { $r.Version = $Matches[1] }
+        $asset = @($j.assets | Where-Object { $_.name -match '^continuous-cli-.+\.tgz$' }) | Select-Object -First 1
+        if ($asset) { $r.CliUrl = $asset.browser_download_url }
+    } catch { $r.Error = $_.Exception.Message }
+    $script:relInfo = $r
+    return $r
+}
+
+function Get-ContinuousCliVersion([string]$Cli) {
+    # continuous --version prints the bare version (2.4.4); '' when it does not run.
+    $v = (& $Cli --version 2>$null | Select-Object -First 1)
+    if ("$v" -match '(\d+(\.\d+)+)') { return $Matches[1] }
+    return ''
+}
+
+function Compare-Version([string]$A, [string]$B) {
+    # -1, 0 or 1, comparing dotted numbers (2.4.10 is newer than 2.4.9).
+    $x = @($A -split '\.' | ForEach-Object { [int]$_ }); $y = @($B -split '\.' | ForEach-Object { [int]$_ })
+    for ($i = 0; $i -lt [Math]::Max($x.Count, $y.Count); $i++) {
+        $p = if ($i -lt $x.Count) { $x[$i] } else { 0 }; $q = if ($i -lt $y.Count) { $y[$i] } else { 0 }
+        if ($p -ne $q) { return [Math]::Sign($p - $q) }
+    }
+    return 0
+}
 
 function Get-StrataUpdateInfo([string]$Root, [string]$Git) {
     # How far the checkout is behind GitHub: a git fetch (network), so at most every 15 minutes per folder,
@@ -2466,7 +2375,7 @@ function Get-NodeSetup([string]$Winget) {
             'Move-Item -LiteralPath (Join-Path $base "nodejs-unpack\node-$v-win-x64") -Destination (Join-Path $base ''nodejs'')'
             'Remove-Item -LiteralPath (Join-Path $base ''nodejs-unpack'') -Recurse -Force'
             'Add-UserPath (Join-Path $base ''nodejs'')'
-            'Add-UserPath (Join-Path $env:APPDATA ''npm'')   # where npm install -g puts cline and continuous'
+            'Add-UserPath (Join-Path $env:APPDATA ''npm'')   # where npm install -g puts continuous'
             'node --version'
         ) -join "`r`n") + "`r`n"
     }
@@ -2618,13 +2527,6 @@ function Invoke-SetupAction([string]$Key, [string]$Label) {
             if (-not (Confirm-Setup $msg)) { return }
             Use-SetupFolders
             Start-SetupConsole 'model' 'Strata: installing the recommended model' "Set-Location -LiteralPath '$($root -replace "'", "''")'`r`nWrite-Host '> START-HERE.bat --yes --no-start$($extra -replace "'", "''")'`r`n`$null | & cmd.exe /c START-HERE.bat --yes --no-start$extraPs | Out-Host"
-        }
-        'cline|Install Cline' {
-            $n = Get-NodeSetup $winget
-            if (-not (Confirm-Setup "Install $($n.How)Cline (npm install -g cline) for your account?")) { return }
-            $body = $n.Body
-            $body += "Write-Host '> npm install -g cline'`r`n& npm install -g cline | Out-Host"
-            Start-SetupConsole 'cline' 'Installing Cline' $body
         }
         { $_ -in 'continuous|Install Continuous CLI', 'continuous|Update Continuous CLI' } {
             $n = Get-NodeSetup $winget
@@ -2786,22 +2688,21 @@ function Update-SlotOp {
             if ($ok) { [void](Stop-Row $op.Row); $msg += " Stopped $($op.Row.Model)." }
             else { $msg += ' The server was left running so the conversation is not lost.' }
         }
-        'cline' { Start-Cline $op.Row; if (-not $ok) { $msg += ' Cline opened anyway (it reads the conversation from the start).' } }
     }
     Set-Status $msg
     Update-SessionList -KeepText
 }
 
-function Start-Resume($Row, [switch]$Cline) {
-    # Start the server or load the model as needed, then restore <config>-latest.bin (and open Cline).
+function Start-Resume($Row) {
+    # Start the server or load the model as needed, then restore <config>-latest.bin.
     $name = Get-LatestSessionName $Row
     $dir = Get-SessionDir $Row
     if (-not $dir -or -not (Test-Path -LiteralPath (Join-Path $dir $name))) { Set-Status "No $name to resume for $($Row.Model)."; return $false }
-    if (Test-RowReady $Row) { Start-SlotAction $Row 'restore' $name $(if ($Cline) { 'cline' } else { '' }); return $true }
+    if (Test-RowReady $Row) { Start-SlotAction $Row 'restore' $name ''; return $true }
     $h = $script:health[$Row.Port]
     if ($h -and $h.Up -and $h.Model -eq $Row.Model) { Request-Load $Row }
     elseif (-not (Start-Server $Row)) { return $false }
-    $script:resumePending = @{ Row = $Row; Name = $name; Cline = [bool]$Cline; T0 = Get-Date }
+    $script:resumePending = @{ Row = $Row; Name = $name; T0 = Get-Date }
     Set-Status "Resuming $($Row.Model): $name is restored once the model has loaded..."
     return $true
 }
@@ -2812,7 +2713,7 @@ function Update-ResumePending {
     Request-LoadIfIdle $rp.Row
     if (Test-RowReady $rp.Row) {
         $script:resumePending = $null
-        Start-SlotAction $rp.Row 'restore' $rp.Name $(if ($rp.Cline) { 'cline' } else { '' })
+        Start-SlotAction $rp.Row 'restore' $rp.Name ''
     } elseif (((Get-Date) - $rp.T0).TotalMinutes -gt $LoadTimeoutMinutes) {
         $script:resumePending = $null
         Set-Status "$($rp.Row.Model) did not load in time; nothing was restored."
@@ -3181,7 +3082,7 @@ function Open-ConfigEditor($Row, [switch]$Force, $Override) {
 
     New-CfgHeader $ui.CfgServerPanel 'Model and network'
     foreach ($d in @(
-            @{ Name = 'model_name'; Kind = 'text'; Help = 'The model id the API reports and clients ask for. Cline, the benchmark and this GUI find the server by it.' }
+            @{ Name = 'model_name'; Kind = 'text'; Help = 'The model id the API reports and clients ask for. Continuous, the benchmark and this GUI find the server by it.' }
             @{ Name = 'port'; Kind = 'port'; Help = 'The HTTP port (Strata''s default 8080). Two configs on one port cannot run together.' }
             @{ Name = 'host'; Kind = 'host'; Help = 'The address the server listens on. Empty or 127.0.0.1: this PC only. Anything else needs an API key (saving refuses without one).' }
             @{ Name = 'api_key'; Kind = 'text'; Help = 'Clients must send this key. Needed when host is not this PC only.' }
@@ -4155,23 +4056,13 @@ if (-not $foundRoot -and -not $StrataRoot) {
 }
 $ui.SetupRootBox.Text = $(if ($foundRoot) { $foundRoot } elseif ($firstChoice) { $firstChoice.Root } else { Get-SuggestedStrataRoot })
 $ui.RootBox.Text = $ui.SetupRootBox.Text   # never empty: everything joins paths onto it
-$ui.FolderBox.Text = $settings.ClineFolder
-$ui.ClineScriptBox.Text = $settings.ClineScript
-$ui.VsixBox.Text = $settings.ContinueVsix
+$ui.FolderBox.Text = $(if ($settings.ClineFolder) { $settings.ClineFolder } else { $settings.ProjectFolder })
 $ui.ExtraBox.Text = $settings.ExtraArgs
 $ui.VramBox.Text = $settings.VramReserve
 $ui.FitChk.IsChecked = [bool]$settings.FitMaxTokens
 # MTP overrides start at the config's own settings every time: a forgotten "off" would quietly slow every run
 $ui.MtpBox.ItemsSource = @('(config)', 'on', 'off (prompt lookup only)'); $ui.MtpBox.SelectedIndex = 0
 $ui.SpecBox.ItemsSource = @('(config)') + @(1..8 | ForEach-Object { [string]$_ }); $ui.SpecBox.SelectedIndex = 0
-foreach ($v in @('2', '5', '10', '15', '20')) { [void]$ui.ReserveBox.Items.Add($v) }
-if (-not $settings.HeadroomV2) {
-    if ([string]$settings.ReservePercent -eq '10') { $settings.ReservePercent = '2' }   # the old default, not a choice
-    $settings.HeadroomV2 = $true
-}
-$ui.ReserveBox.SelectedItem = $(if (@('2', '5', '10', '15', '20') -contains [string]$settings.ReservePercent) { [string]$settings.ReservePercent } else { '2' })
-$ClineReservePercent = [int]$ui.ReserveBox.SelectedItem
-$ui.ReserveBox.Add_SelectionChanged({ $script:ClineReservePercent = [int]$ui.ReserveBox.SelectedItem; Update-CtxHint })
 $ui.CtxBox.Add_SelectionChanged({ $window.Dispatcher.BeginInvoke([action]{ Update-CtxHint }) | Out-Null })
 $ui.CtxBox.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]{ Update-CtxHint })
 $ui.ConfigList.Add_SelectionChanged({
@@ -4220,20 +4111,23 @@ $ui.RootBrowse.Add_Click({
 })
 $ui.RefreshBtn.Add_Click({ Read-Configs; Update-ServicePicker; Read-Results })
 $ui.FolderBrowse.Add_Click({
-    $p = Select-Folder $ui.FolderBox.Text 'Select the folder Cline should open'
+    $p = Select-Folder $ui.FolderBox.Text 'Select the project folder VS Code opens'
     if ($p) { $ui.FolderBox.Text = $p }
 })
-$ui.ClineScriptBrowse.Add_Click({
-    $dialog = New-Object System.Windows.Forms.OpenFileDialog
-    $dialog.Filter = 'PowerShell scripts (*.ps1)|*.ps1'
-    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $ui.ClineScriptBox.Text = $dialog.FileName }
-})
-$ui.VsixBrowse.Add_Click({
+$ui.VsCodeBtn.Add_Click({ Open-VsCode })
+$ui.DevVsixBtn.Add_Click({
+    $code = Get-CodeCommand
+    if (-not $code) { Set-Status 'VS Code not found: install it (code.visualstudio.com), then try again.'; return }
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
     $dialog.Filter = 'VS Code extension (*.vsix)|*.vsix'
-    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $ui.VsixBox.Text = $dialog.FileName }
+    if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+    Set-Status "Installing $($dialog.FileName)..."
+    $window.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)   # show it first
+    $out = Invoke-CodeCli $code "--install-extension $(QPath $dialog.FileName) --force"
+    $have = (Get-InstalledExtensions $code)[$ContinuousIds[0]]
+    if ($out -match '(?i)failed|error' -or -not $have) { [System.Windows.MessageBox]::Show("$($dialog.FileName) did not install:`n`n$out", 'Strata') | Out-Null; return }
+    Set-Status "Installed $([IO.Path]::GetFileName($dialog.FileName)): Continuous is now $have. Open VS Code uses it."
 })
-$ui.VsCodeBtn.Add_Click({ Open-VsCode })
 $ui.ContinuousCliBtn.Add_Click({ Open-VsCode -Cli })
 $ui.ContinueCfgBtn.Add_Click({
     $f = Get-ContinueConfigPath
@@ -4280,25 +4174,6 @@ $ui.RemoveModelBtn.Add_Click({
     $row = Get-Selected
     if ($row) { Remove-Model $row }
 })
-function Open-Cline([switch]$Plan) {
-    # Open Cline / Plan in Cline: start the server if needed, then Cline (Start-Cline) once the model has loaded.
-    $row = Get-Selected
-    if (-not $row) { return }
-    $launcher = Clean-Path $ui.ClineScriptBox.Text
-    $folder = Clean-Path $ui.FolderBox.Text
-    if (-not (Test-Path -LiteralPath $launcher)) { [System.Windows.MessageBox]::Show("Launcher script not found: $launcher", 'Strata') | Out-Null; return }
-    if (-not (Test-Path -LiteralPath $folder -PathType Container)) { [System.Windows.MessageBox]::Show('Choose a project folder.', 'Strata') | Out-Null; return }
-    if (-not $Plan -and $ui.ResumeChk.IsChecked -and (Get-SessionDir $row) -and (Test-Path -LiteralPath (Join-Path (Get-SessionDir $row) (Get-LatestSessionName $row)))) {
-        [void](Start-Resume $row -Cline)
-        return
-    }
-    if (Test-RowReady $row) { Start-Cline $row -Plan:$Plan; return }
-    if (-not (Start-Server $row)) { return }
-    $script:clinePending = @{ Row = $row; T0 = Get-Date; Plan = [bool]$Plan }
-    Set-Status "Cline opens once $($row.Model) has loaded..."
-}
-$ui.ClineBtn.Add_Click({ Open-Cline })
-$ui.PlanClineBtn.Add_Click({ Open-Cline -Plan })
 
 $ui.BenchBtn.Add_Click({ Start-BenchQueue })
 $ui.CancelBtn.Add_Click({ Stop-Bench })
@@ -4395,7 +4270,6 @@ $ui.CfgTabs.Add_SelectionChanged({
     if ($e.OriginalSource -eq $ui.CfgTabs -and $ui.CfgTabs.SelectedIndex -eq 4 -and $script:cfgEdit) { $ui.CfgJson.Text = Get-ConfigText (Build-Config).Cfg }
 })
 
-$ui.ResumeChk.IsChecked = [bool]$settings.ResumeFirst
 $ui.SvcHibernateChk.IsChecked = [bool]$settings.SvcHibernate
 $ui.SessionBox.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]{ Update-SessionHint })
 $ui.SessSaveBtn.Add_Click({
@@ -4451,7 +4325,7 @@ $ui.SetupDataBrowse.Add_Click({
 })
 $ui.SetupRootBox.Add_LostFocus({ Use-SetupFolders; Show-SetupSteps })
 $ui.SetupDataBox.Add_LostFocus({ Use-SetupFolders; Show-SetupSteps })
-$ui.SetupRefreshBtn.Add_Click({ $script:hw = $null; $script:updInfo = @{}; Show-SetupSteps })
+$ui.SetupRefreshBtn.Add_Click({ $script:hw = $null; $script:updInfo = @{}; $script:relInfo = $null; Show-SetupSteps })
 
 $ui.SvcApplyBtn.Add_Click({ Install-StrataService })
 $ui.SvcRemoveBtn.Add_Click({ Remove-StrataService })
@@ -4481,17 +4355,16 @@ $timer.Interval = [TimeSpan]::FromMilliseconds(1000)
 $timer.Add_Tick({
     try {
         Update-Health
-        if ($script:clinePending) {
-            $row = $script:clinePending.Row
+        if ($script:openPending) {
+            $row = $script:openPending.Row
             Request-LoadIfIdle $row
             if (Test-RowReady $row) {
-                $plan = [bool]$script:clinePending.Plan
-                $target = $script:clinePending.Target
-                $script:clinePending = $null
-                if ($target -eq 'vscode') { Start-VsCode $row } elseif ($target -eq 'cli') { Start-ContinuousCli $row } else { Start-Cline $row -Plan:$plan }
-            } elseif (((Get-Date) - $script:clinePending.T0).TotalMinutes -gt $LoadTimeoutMinutes) {
-                $script:clinePending = $null
-                Set-Status "$($row.Model) did not load in time; Cline was not opened."
+                $target = $script:openPending.Target
+                $script:openPending = $null
+                if ($target -eq 'cli') { Start-ContinuousCli $row } else { Start-VsCode $row }
+            } elseif (((Get-Date) - $script:openPending.T0).TotalMinutes -gt $LoadTimeoutMinutes) {
+                $script:openPending = $null
+                Set-Status "$($row.Model) did not load in time; it was not opened."
             }
         }
         Invoke-BenchStep
@@ -4520,18 +4393,14 @@ $window.Add_Closing({
     $sel = @(Get-SelectedConfigs)
     $out = [ordered]@{
         StrataRoot   = Get-Root
-        ClineScript  = Clean-Path $ui.ClineScriptBox.Text
-        ClineFolder  = Clean-Path $ui.FolderBox.Text
+        ProjectFolder = Clean-Path $ui.FolderBox.Text
         Thinking     = [string]$ui.ThinkingBox.SelectedItem
         PlanThinking = [string]$ui.PlanThinkingBox.SelectedItem
-        ContinueVsix = Clean-Path $ui.VsixBox.Text
         Context      = $(if ($ui.CtxBox.Text -eq '(config)') { '' } else { $ui.CtxBox.Text })
         ExtraArgs    = $ui.ExtraBox.Text
         VramReserve  = $ui.VramBox.Text
         FitMaxTokens = [bool]$ui.FitChk.IsChecked
-        ResumeFirst  = [bool]$ui.ResumeChk.IsChecked
         SvcHibernate = [bool]$ui.SvcHibernateChk.IsChecked
-        ReservePercent = [string]$ui.ReserveBox.SelectedItem
         OpenWeb      = [bool]$ui.OpenWebChk.IsChecked
         Minimized    = [bool]$ui.MinChk.IsChecked
         UnloadOllama = [bool]$ui.OllamaChk.IsChecked

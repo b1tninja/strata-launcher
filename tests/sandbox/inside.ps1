@@ -184,11 +184,11 @@ if (Run-Step $win $p.Id 'Make it updatable' 'strata' 1500) {
 }
 Shot 'after-make-updatable'
 
-# 6. Cline without winget: Node.js from its portable zip, then npm install -g cline
-if (Run-Step $win $p.Id 'Install Cline' 'cline' 900) {
-    Check ((Step-Text $win) -match 'Cline is installed') 'Setup tab: Cline installed'
+# 6. the Continuous CLI without winget: Node.js from its portable zip, then npm install -g of the newest release's package
+if (Run-Step $win $p.Id 'Install Continuous CLI' 'continuous' 900) {
+    Check ((Step-Text $win) -match 'The Continuous CLI [\d.]+ is installed') 'Setup tab: Continuous CLI installed'
 }
-Shot 'after-cline'
+Shot 'after-continuous-cli'
 
 # 7. winget itself, the way Microsoft documents it for Windows Sandbox
 if (Run-Step $win $p.Id 'Set up winget' 'winget' 900) {

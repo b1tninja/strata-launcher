@@ -2,22 +2,6 @@ $ErrorActionPreference = 'Stop'
 $gui = Split-Path -Parent $PSScriptRoot
 $bad = 0
 
-# Where the launcher used to live, built at runtime so this file never matches itself.
-$sep = [IO.Path]::DirectorySeparatorChar
-$needle = $sep + 'code' + $sep + 'cline-strata.ps1'
-
-Write-Output '--- the launcher the GUI launches by default:'
-$default = Join-Path $gui 'cline-strata.ps1'
-if (Test-Path -LiteralPath $default) { Write-Output "  ok   $default" }
-else { $bad++; Write-Output "  FAIL missing: $default" }
-
-Write-Output '--- leftover references to the old loose copy:'
-$left = Get-ChildItem -LiteralPath $gui -Recurse -Include *.ps1, *.md, *.json -File |
-    Where-Object { $_.FullName -notmatch '\\(bin|obj|\.git)\\' } |
-    Select-String -SimpleMatch -Pattern $needle
-if ($left) { $bad += @($left).Count; $left | ForEach-Object { Write-Output ("  FAIL {0}:{1}" -f $_.Path, $_.LineNumber) } }
-else { Write-Output '  none' }
-
 Write-Output '--- every Strata Launcher shortcut (desktop, Start menu, next to this folder) points at a script that exists:'
 $ws = New-Object -ComObject WScript.Shell
 $quote = [char]34

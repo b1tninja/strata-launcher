@@ -13,8 +13,7 @@ command-line tool.
 | **Strata** | A `git clone` of Strata, or its zip without Git. A clone shows how far it is behind GitHub, and **Update** runs Strata's own `UPDATE.bat`. A zip copy can be **made updatable** once Git is there. |
 | **Python and a PC check** | Python through [uv](https://github.com/astral-sh/uv): one small program that downloads a standalone copy of the Python version Strata pins and creates Strata's `.venv` with it, in seconds and without an installer. Then Strata's own `START-HERE.bat --check` installs its packages and reports what this PC can run. |
 | **A model** | Pick one from the **Models** tab, with what each needs and whether it fits this PC, or let Strata choose the recommended size for your RAM. Strata downloads it from Hugging Face itself (58-190 GB, resumable). |
-| **Node.js and Cline** | For **Open Cline**: Node.js through winget or its portable zip, then `npm install -g cline`. |
-| **Continuous CLI** | For **Open Continuous CLI**: Node.js the same way if it is missing, then `npm install -g` of the CLI package on the newest [Continuous release](https://github.com/b1tninja/continuous/releases). **Update** reinstalls from the newest release. |
+| **Continuous CLI** | For **Open Continuous CLI** (optional): Node.js through winget or its portable zip if it is missing, then `npm install -g` of the CLI package on the newest [Continuous release](https://github.com/b1tninja/continuous/releases). It shows the installed version against the newest release; **Update** installs the newest. The VS Code extension needs no step: **Open VS Code** installs it from the Marketplace. |
 | **Shortcuts** | Desktop and Start menu. |
 
 On first start, Strata Launcher lists the Strata folders it finds on the PC. Choose an empty or new
@@ -30,7 +29,7 @@ folder instead and it offers to download Strata there.
 | Setup windows' logs, changed configs for a launch | `%TEMP%\strata-launcher` |
 | uv | `%LOCALAPPDATA%\Programs\uv` (its Python under `%APPDATA%\uv\python`) |
 | MinGit (without winget) | `%LOCALAPPDATA%\Programs\MinGit`, on your PATH |
-| Node.js (without winget) | `%LOCALAPPDATA%\Programs\nodejs`, on your PATH; Cline under `%APPDATA%\npm` |
+| Node.js (without winget) | `%LOCALAPPDATA%\Programs\nodejs`, on your PATH; the Continuous CLI under `%APPDATA%\npm` |
 | Strata, its `.venv`, configs | the Strata folder you chose |
 | Models | the model folder you chose (`Strata-data` by default) |
 

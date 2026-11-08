@@ -6,7 +6,7 @@
 
 <p align="center">
   Set up, run, benchmark and tune <a href="https://github.com/Niko1221/Strata">Strata</a> on Windows —<br>
-  from a brand-new PC to Cline coding against your local model.
+  from a brand-new PC to VS Code coding against your local model.
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@ Run either again to update. Models are removed one at a time in the app
 ## What you get
 
 - **Setup on a clean PC.** Strata, Git, Python (through [uv](https://github.com/astral-sh/uv), in
-  seconds), a model, Node.js and Cline, each with or without winget. Tested on a clean Windows in
+  seconds), a model, and the Continuous CLI, each with or without winget. Tested on a clean Windows in
   Windows Sandbox. [Details](docs/setup.md)
 - **Start and stop models** one at a time, with per-launch context, rope scaling and VRAM overrides
   that never touch your config files.
@@ -51,8 +51,9 @@ Run either again to update. Models are removed one at a time in the app
 - **Sessions:** save the conversation the engine holds to disk and resume it later, even after a
   restart.
 - **A background service** that loads a model on the first request and unloads it when idle.
-- **Cline, set up right:** opens Cline against the running model with a context limit it can
-  actually compact against. [Why that matters](docs/using.md#cline)
+- **VS Code, set up right:** **Open VS Code** installs [Continuous](https://github.com/b1tninja/continuous) from
+  the Marketplace and points it at the running model, with its real context, plan and act thinking levels, and Tab
+  autocomplete. **Open Continuous CLI** does the same in a terminal. [Details](docs/using.md#coding-with-continuous)
 
 [Using Strata Launcher](docs/using.md) · [Troubleshooting](docs/troubleshooting.md) ·
 [Contributing and tests](CONTRIBUTING.md)
@@ -63,7 +64,7 @@ Strata runs the Qwen3.8-Flash-Next family of models locally on one graphics card
 and has its own [desktop app and terminal app](https://github.com/Niko1221/Strata/releases/latest).
 Strata Launcher works with a Strata folder (a clone or Strata's zip, driven through its own
 `START-HERE.bat`, `UPDATE.bat` and configs) and adds the tools around it: benchmarking, the config
-editor, sessions, the idle service and Cline.
+editor, sessions, the idle service and Continuous.
 
 It is a single PowerShell script with a native Windows window, running on the Windows PowerShell
 5.1 that every Windows 10 and 11 has: nothing to build. It is Windows-only; Strata itself also runs

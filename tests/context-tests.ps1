@@ -1,4 +1,4 @@
-# Test the context logic of strata-launcher.ps1 / cline-strata.ps1 without starting either UI:
+# Test the logic of strata-launcher.ps1 without starting its UI:
 # pull the real function bodies out of the files with the AST, then drive them with stubs.
 $ErrorActionPreference = 'Stop'
 
@@ -22,46 +22,10 @@ function Assert-Is($Got, $Want, [string]$What) {
     else { $script:fails++; "  FAIL $What : got $Got, want $Want" }
 }
 
-# ---------------------------------------------------------------- cline-strata.ps1
-$launcher = Join-Path (Split-Path -Parent $PSScriptRoot) 'cline-strata.ps1'
-if (-not (Test-Path -LiteralPath $launcher)) { throw "launcher not found next to the GUI: $launcher" }
-Invoke-Expression (Get-FunctionText $launcher @('Get-ClineContext'))
-Invoke-Expression (Get-FunctionText $launcher @('Resolve-ClineContext'))
-$ContextReserve = 4096
-$ReservePercent = 10
-$FallbackContext = 32768
-Write-Host '--- Get-ClineContext (launcher)'
-# Cline sent 131118-132455-token prompts against 126976 (a flat 4096 off 131072): the reserve is a share.
-Assert-Is (Get-ClineContext 131072) 117964 '131072 - 10% (13108)'
-Assert-Is (Get-ClineContext 262144) 235929 '262144 - 10%'
-Assert-Is (Get-ClineContext 1048576) 943718 '1M - 10%'
-Assert-Is (Get-ClineContext 8192) 4096 '8192: the 4096 floor beats 10%'
-$ReservePercent = 5
-Assert-Is (Get-ClineContext 131072) 124518 '5% headroom'
-$ReservePercent = 2   # the default since Cline CLI 3 overcounts (compacted at 325,817 real of 471,859 told)
-Assert-Is (Get-ClineContext 524288) 513802 '512K - 2% (the default)'
-Assert-Is (Get-ClineContext 131072) 126976 '128K at 2%: the 4096 floor beats 2%'
-$ReservePercent = 10
-Assert-Is (Get-ClineContext 4096) 2048 '4096 -> half, not 0'
-Assert-Is (Get-ClineContext 1024) 1024 'tiny context stays usable'
-Assert-Is (Get-ClineContext 0) 0 'unknown stays 0'
-
-# stub the health probe the extracted Resolve-ClineContext calls
-$testHealth = $null
-function Test-StrataHealth { [pscustomobject]@{ Context = $testHealth } }
-Write-Host '--- Resolve-ClineContext (launcher)'
-$testHealth = 131072; Assert-Is (Resolve-ClineContext 262144) 117964 'asked 262144 clamps to the server (the bug)'
-$testHealth = 131072; Assert-Is (Resolve-ClineContext 0) 117964 'asked nothing -> the server answers'
-$testHealth = 131072; Assert-Is (Resolve-ClineContext 65536) 58982 'a smaller ask is kept'
-$testHealth = 0;      Assert-Is (Resolve-ClineContext 0) 28672 'server silent -> fallback, minus the reserve'
-$testHealth = 0;      Assert-Is (Resolve-ClineContext 32768) 28672 'server silent, asked 32768'
-
 # ---------------------------------------------------------------- strata-launcher.ps1
 $gui = Join-Path (Split-Path -Parent $PSScriptRoot) 'strata-launcher.ps1'
-Invoke-Expression (Get-FunctionText $gui @('Get-ArgValue', 'Get-CtxOverride', 'Get-RowContext', 'Get-ClineContext',
+Invoke-Expression (Get-FunctionText $gui @('Get-ArgValue', 'Get-CtxOverride', 'Get-RowContext',
     'Get-RopeScale', 'Set-ArgValue', 'Remove-Arg', 'Set-ContextArgs'))
-$ClineContextReserve = 4096
-$ClineReservePercent = 10
 $TrainedContext = 262144
 function Clean-Path([string]$Text) { $Text }
 Write-Host '--- Get-RowContext (GUI)'
@@ -78,13 +42,7 @@ $script:health[8080] = [pscustomobject]@{ Context = 131072 }
 Assert-Is (Get-RowContext $cfgRow) 131072 '...but never the running server'
 $ui = [pscustomobject]@{ CtxBox = [pscustomobject]@{ Text = '(config)' } }
 $noCfg = [pscustomobject]@{ Port = 8081; Cfg = [pscustomobject]@{ args = @('--kv', 'int8') } }
-Assert-Is (Get-RowContext $noCfg) 0 'nothing known -> 0 (Open Cline refuses instead of guessing)'
-Assert-Is (Get-ClineContext 131072) 117964 'GUI reserve matches the launcher'
-# the two scripts' defaults stay in step
-$guiDefault = [regex]::Match((Get-Content -LiteralPath $gui -Raw), '(?m)^\$ClineReservePercent = (\d+)').Groups[1].Value
-$lnDefault = [regex]::Match((Get-Content -LiteralPath $launcher -Raw), '\[int\]\$ReservePercent = (\d+)').Groups[1].Value
-Assert-Is $guiDefault $lnDefault 'the GUI''s default headroom is cline-strata.ps1''s'
-Assert-Is $guiDefault '2' 'default headroom'
+Assert-Is (Get-RowContext $noCfg) 0 'nothing known -> 0 (Open VS Code refuses instead of guessing)'
 $ui = [pscustomobject]@{ CtxBox = [pscustomobject]@{ Text = '524288  (yarn x2, experimental)' } }
 Assert-Is (Get-RowContext $noCfg) 524288 'a labelled step reads as its number'
 
@@ -138,76 +96,6 @@ try {
     $msg = try { [void](Get-EffectiveConfig $rowWithout); 'no error' } catch { $_.Exception.Message }
     Assert-Is ($msg -like 'MTP on: no draft layer in*') $true 'on without a downloaded draft layer says so'
 } finally { Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue }
-
-# ------------------------------------------------- Ensure-ClineStrataAuth rewrites a stale window
-# Run the real function against a throwaway copy of Cline's settings, so a model registered with
-# too big a context is seen being repaired rather than kept because the entry already existed.
-Write-Host '--- Ensure-ClineStrataAuth (launcher)'
-$sandbox = Join-Path $env:TEMP ('strata-launcher-tests-' + [Guid]::NewGuid().ToString('N'))
-$settings = Join-Path $sandbox '.cline\data\settings'
-New-Item -ItemType Directory -Path $settings | Out-Null
-@'
-{ "version": 1, "providers": { "openai-compatible": {
-    "provider": { "name": "OpenAI Compatible", "baseUrl": "http://127.0.0.1:9999/v1", "defaultModelId": "old-model" },
-    "models": { "qwen-test": { "id": "qwen-test", "name": "qwen-test", "contextWindow": 262144,
-                               "maxInputTokens": 262144, "capabilities": ["streaming","tools"] } }
-} } }
-'@ | Set-Content -LiteralPath (Join-Path $settings 'models.json') -Encoding ascii
-'{"lastUsedProvider":"cline","providers":{"openai-compatible":{"settings":{"baseUrl":"http://127.0.0.1:9999/v1","model":"old-model","apiKey":"local","contextWindow":262144,"timeout":600000}}}}' |
-    Set-Content -LiteralPath (Join-Path $settings 'providers.json') -Encoding ascii
-# Legacy globalState: Cline re-imports it into providers.json on start, so a window that is too
-# big in here can undo the repair above. planMode's info has no window at all (must be inserted),
-# and the distractor block must keep its own unrelated 262144.
-'{"openAiBaseUrl":"http://127.0.0.1:9999/v1","actModeOpenAiModelId":"old-model","planModeOpenAiModelId":"old-model",' +
-'"actModeOpenAiModelInfo":{"contextWindow":262144,"supportsImages":false,"inputPrice":0},' +
-'"planModeOpenAiModelInfo":{"supportsImages":false},' +
-'"someOtherState":{"contextWindow":262144}}' |
-    Set-Content -LiteralPath (Join-Path $sandbox '.cline\data\globalState.json') -Encoding ascii
-
-$fakeCline = Join-Path $sandbox 'cline-auth.cmd'
-'@exit /b 0' | Set-Content -LiteralPath $fakeCline -Encoding ascii
-function Get-ClineCommand { $fakeCline }
-$Provider = 'openai-compatible'
-$ApiKey = 'local'
-$StrataBase = 'http://127.0.0.1:8080'
-Invoke-Expression (Get-FunctionText $launcher @('Ensure-ClineStrataAuth'))
-$oldProfile = $env:USERPROFILE
-try {
-    $env:USERPROFILE = $sandbox
-    [void](Ensure-ClineStrataAuth -ModelId 'qwen-test' -Tokens 126976)
-    $m = Get-Content -LiteralPath (Join-Path $settings 'models.json') -Raw | ConvertFrom-Json
-    $e = $m.providers.'openai-compatible'.models.'qwen-test'
-    Assert-Is $e.contextWindow 126976 'an existing entry gets the server context (was stuck at 262144)'
-    Assert-Is $e.maxInputTokens 126976 'maxInputTokens follows'
-    Assert-Is $e.maxTokens 31744 'maxTokens filled in (a quarter of the context, at most 32768)'
-    $mPath = Join-Path $settings 'models.json'
-    foreach ($case in @(@(8192, 31744, 'the old 8192 default is raised'), @(12000, 12000, 'a cap of your own is kept'))) {
-        $j = Get-Content -LiteralPath $mPath -Raw | ConvertFrom-Json
-        $j.providers.'openai-compatible'.models.'qwen-test'.maxTokens = $case[0]
-        [IO.File]::WriteAllText($mPath, ($j | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding $false))
-        [void](Ensure-ClineStrataAuth -ModelId 'qwen-test' -Tokens 126976)
-        Assert-Is (Get-Content -LiteralPath $mPath -Raw | ConvertFrom-Json).providers.'openai-compatible'.models.'qwen-test'.maxTokens $case[1] $case[2]
-    }
-    $m = Get-Content -LiteralPath $mPath -Raw | ConvertFrom-Json
-    Assert-Is $m.providers.'openai-compatible'.provider.baseUrl 'http://127.0.0.1:8080/v1' 'base URL points at this server'
-    # Cline's JSON.parse rejects a byte-order mark and then rebuilds the provider without contextWindow,
-    # which turns its automatic compaction off: both files must be plain UTF-8.
-    foreach ($f in 'models.json', 'providers.json') {
-        $b = [IO.File]::ReadAllBytes((Join-Path $settings $f))
-        Assert-Is ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) $false "$f has no byte-order mark"
-    }
-    $p = Get-Content -LiteralPath (Join-Path $settings 'providers.json') -Raw | ConvertFrom-Json
-    Assert-Is $p.providers.'openai-compatible'.settings.contextWindow 126976 'providers.json gets it too'
-    $g = Get-Content -LiteralPath (Join-Path $sandbox '.cline\data\globalState.json') -Raw | ConvertFrom-Json
-    Assert-Is $g.actModeOpenAiModelInfo.contextWindow 126976 'legacy act-mode window follows the server'
-    Assert-Is $g.planModeOpenAiModelInfo.contextWindow 126976 'legacy plan-mode window is inserted when missing'
-    Assert-Is $g.someOtherState.contextWindow 262144 'an unrelated block keeps its own number'
-    Assert-Is $g.openAiBaseUrl 'http://127.0.0.1:8080/v1' 'legacy base URL follows this server'
-    Assert-Is $g.actModeOpenAiModelId 'qwen-test' 'legacy model id follows'
-} finally {
-    $env:USERPROFILE = $oldProfile
-    Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
-}
 
 # ---------------------------------------------------------------- PC tab: RAM, PCIe links, drives
 Invoke-Expression (Get-FunctionText $gui @('Get-RamRating', 'Get-PcWarnings', 'Get-PcSummary', 'Get-PcShort', 'Read-BenchPc'))
@@ -267,7 +155,7 @@ try {
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 
 # ---------------------------------------------------------------- VS Code + Continue
-Invoke-Expression (Get-FunctionText $gui @('Get-BaseUrl', 'Get-ContinueConfigText', 'Get-ContinueVsix'))
+Invoke-Expression (Get-FunctionText $gui @('Get-BaseUrl', 'Get-ContinueConfigText'))
 Write-Host '--- Continue config and VSIX'
 $crow = [pscustomobject]@{ Model = 'qwen3.8-flash-next-nvfp4-nvfp4'; Port = 8083 }
 $ctext = Get-ContinueConfigText $crow 524288 'xhigh' 'low'
@@ -284,38 +172,11 @@ $itext = Get-ContinueConfigText $crow 524288 'xhigh' 'low' $true
 Assert-Is (@($itext -split "`n" | Where-Object { $_ -match '^    capabilities: \[tool_use, image_input\]$' }).Count) 2 'a server that reads images: both chat entries take them'
 Assert-Is ($ctext -match 'image_input') $false 'a server without images: none offered'
 Assert-Is ($ctext -match '[^\x00-\x7F]') $false 'plain ASCII'
-$vdir = Join-Path $env:TEMP "vsix-test-$PID"; New-Item -ItemType Directory -Force $vdir | Out-Null
-try {
-    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
-    $newVsix = {
-        param($name, $publisher, $id, $version)
-        $zip = [IO.Compression.ZipFile]::Open((Join-Path $vdir $name), 'Create')
-        try {
-            $w = New-Object IO.StreamWriter($zip.CreateEntry('extension.vsixmanifest').Open())
-            $w.Write("<PackageManifest Version=`"2.0.0`" xmlns=`"http://schemas.microsoft.com/developer/vsx-schema/2011`"><Metadata>" +
-                "<Identity Language=`"en-US`" Id=`"$id`" Version=`"$version`" Publisher=`"$publisher`"/></Metadata></PackageManifest>")
-            $w.Close()
-        } finally { $zip.Dispose() }
-    }
-    & $newVsix 'continue-1.3.40.vsix' 'Continue' 'continue' '1.3.40'
-    Start-Sleep -Milliseconds 50
-    & $newVsix 'continued-win32-x64-1.3.40-3e4599d.vsix' 'b1tninja' 'continued' '1.3.40-3e4599d'
-    Set-Content -LiteralPath (Join-Path $vdir 'other.vsix') -Value 'x'
-    $v = Get-ContinueVsix $vdir
-    Assert-Is "$($v.Id) $($v.Version)" 'b1tninja.continued 1.3.40-3e4599d' 'a folder: the newest continu*.vsix, id and version from its manifest'
-    Start-Sleep -Milliseconds 50
-    & $newVsix 'continuous-win32-x64-2.4.2.vsix' 'b1tninja' 'continuous' '2.4.2'
-    Assert-Is (Get-ContinueVsix $vdir).Id 'b1tninja.continuous' 'the renamed fork''s continuous-*.vsix'
-    Assert-Is (Get-ContinueVsix (Join-Path $vdir 'continue-1.3.40.vsix')).Id 'Continue.continue' 'a file: that file'
-    Assert-Is (Get-ContinueVsix (Join-Path $vdir 'other.vsix')) $null 'not a package'
-    Assert-Is (Get-ContinueVsix (Join-Path $vdir 'missing')) $null 'nothing there'
-} finally { Remove-Item -LiteralPath $vdir -Recurse -Force -ErrorAction SilentlyContinue }
 
 Write-Host '--- Open VS Code: which extension'
 # A fake code.cmd: --list-extensions prints exts.txt, --install-extension adds a line, --uninstall-extension removes it.
 Invoke-Expression (Get-FunctionText $gui @('Invoke-CodeCli', 'Get-InstalledExtensions', 'Start-VsCode'))
-$ContinuousIds = @('b1tninja.continuous'); $ContinueIds = @('b1tninja.continuous', 'b1tninja.continued', 'continue.continue')
-$OldForkIds = @('b1tninja.continued', 'b1tninja.continuing'); $ContinuousRepo = 'b1tninja/continuous'
+$ContinuousIds = @('b1tninja.continuous'); $OldForkIds = @('b1tninja.continued', 'b1tninja.continuing')
 $cdir = Join-Path $env:TEMP "code-test-$PID"; New-Item -ItemType Directory -Force $cdir | Out-Null
 try {
     $state = Join-Path $cdir 'exts.txt'; $calls = Join-Path $cdir 'calls.txt'
@@ -328,7 +189,7 @@ Add-Content -LiteralPath (Join-Path $dir 'calls.txt') -Value ($a -join ' ')
 $list = @(Get-Content -LiteralPath $state -ErrorAction SilentlyContinue | Where-Object { $_ })
 switch ($a[0]) {
     '--list-extensions' { $list }
-    '--install-extension' { if ($a[1] -notmatch 'offline') { Set-Content -LiteralPath $state -Value (@($list) + "$($a[1])@2.4.4") } else { 'Failed: offline' } }
+    '--install-extension' { Set-Content -LiteralPath $state -Value (@($list) + "$($a[1])@2.4.4") }
     '--uninstall-extension' { Set-Content -LiteralPath $state -Value @($list | Where-Object { $_ -notlike "$($a[1])@*" }) }
 }
 '@
@@ -340,10 +201,9 @@ switch ($a[0]) {
     function Clean-Path($p) { $p }
     function QPath($p) { "`"$p`"" }
     function Get-RowContext($r) { 262144 }
-    function Get-ContinueVsix($p) { $null }
     function Write-ContinueConfig($r, $i, $c) { $script:wroteFor = $i; 'cfg' }
     function Set-Status($t) { $script:lastStatus = $t }
-    $ui = @{ FolderBox = @{ Text = $cdir }; VsixBox = @{ Text = '' } }
+    $ui = @{ FolderBox = @{ Text = $cdir } }
     $window = [pscustomobject]@{ Dispatcher = ([pscustomobject]@{} | Add-Member -PassThru -MemberType ScriptMethod -Name Invoke -Value { param($a, $b) }) }
     $vrow = [pscustomobject]@{ Model = 'm'; Port = 8083 }
 
@@ -351,22 +211,30 @@ switch ($a[0]) {
     Start-VsCode $vrow
     Assert-Is $script:wroteFor 'b1tninja.continuous' 'nothing installed: Continuous'
     Assert-Is ((Get-Content $state) -contains 'b1tninja.continuous@2.4.4') $true 'installed from the Marketplace by its ID'
-    Assert-Is ($script:lastStatus -match 'with b1tninja\.continuous 2\.4\.4') $true 'the status names it'
+    Assert-Is ($script:lastStatus -match 'with Continuous 2\.4\.4') $true 'the status names it'
 
     Set-Content -LiteralPath $calls -Value ''
     Start-VsCode $vrow
     Assert-Is (@(Get-Content $calls | Where-Object { $_ -match 'install-extension' }).Count) 0 'installed already: not installed again'
 
-    Set-Content -LiteralPath $state -Value 'continue.continue@1.3.40'
-    $script:askedOldForks = $true
-    $ContinuousIds = @('b1tninja.continuous-offline'); $ContinueIds = @('b1tninja.continuous-offline', 'b1tninja.continued', 'continue.continue')
+    Set-Content -LiteralPath $state -Value @('continue.continue@1.3.40', 'b1tninja.continued@1.3.40')
+    $script:askedOldForks = $true   # the uninstall question is a dialog
     Start-VsCode $vrow
-    Assert-Is $script:wroteFor 'continue.continue' 'the Marketplace fails: an installed upstream Continue is used'
+    Assert-Is $script:wroteFor 'b1tninja.continuous' 'upstream and the old fork installed: Continuous all the same'
+    Assert-Is ((Get-Content $state) -contains 'continue.continue@1.3.40') $true 'upstream Continue is left alone'
   }
 } finally {
     Start-Sleep -Milliseconds 500   # the fake code.cmd that "opened" the folder
     Remove-Item -LiteralPath $cdir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+Write-Host '--- Continuous CLI: is a newer release out'
+Invoke-Expression (Get-FunctionText $gui @('Compare-Version'))
+Assert-Is (Compare-Version '2.4.4' '2.4.4') 0 'same'
+Assert-Is (Compare-Version '2.4.3' '2.4.4') -1 'older'
+Assert-Is (Compare-Version '2.4.10' '2.4.9') 1 'by number, not text'
+Assert-Is (Compare-Version '2.5' '2.4.9') 1 'fewer parts'
+Assert-Is (Compare-Version '2.4' '2.4.0') 0 'a missing part is 0'
 
 Write-Host '--- Continue global folder'
 Invoke-Expression (Get-FunctionText $gui @('Get-ContinueGlobalDir', 'Get-ContinueConfigPath'))

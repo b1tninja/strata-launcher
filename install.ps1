@@ -1,5 +1,5 @@
 # strata-launcher installer for a new PC. Gets strata-launcher (no admin rights needed), adds Start menu and
-# desktop shortcuts, and starts it; its Setup tab then fetches Git, Strata, a model and Cline.
+# desktop shortcuts, and starts it; its Setup tab then fetches Git, Strata, a model and the Continuous CLI.
 #
 #   irm https://raw.githubusercontent.com/b1tninja/strata-launcher/main/install.ps1 | iex
 #
@@ -14,7 +14,7 @@ param(
     [switch]$NoStart,
     # Remove strata-launcher: its shortcuts, its Settings > Apps entry, its registry key, the Service tab's
     # scheduled task and (when this installer downloaded it, not a clone you run it from) its folder.
-    # Strata, the models, Python, Git, Node.js and Cline stay. Models are removed in the app (Remove model).
+    # Strata, the models, Python, Git, Node.js and the Continuous CLI stay. Models are removed in the app (Remove model).
     [switch]$Uninstall,
     # Set by the Settings > Apps entry: the result is shown in a message box, as there is no console to read.
     [switch]$Quiet

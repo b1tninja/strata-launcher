@@ -9,7 +9,7 @@ catalog entry's figure. Select one to launch it, or several to benchmark them in
 
 | Tab | |
 | --- | --- |
-| **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve, [MTP drafting and its depth](#mtp-speculative-decoding) and more; your config files are never changed. **Remove model...** deletes a model's files and config ([details](setup.md#removing-models)). **Sessions**, **Open Cline**, **Plan in Cline**, **Open VS Code** (with Continue) and **Open Continuous CLI** are here too (below). |
+| **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve, [MTP drafting and its depth](#mtp-speculative-decoding) and more; your config files are never changed. **Remove model...** deletes a model's files and config ([details](setup.md#removing-models)). **Open VS Code** and **Open Continuous CLI** ([coding with Continuous](#coding-with-continuous)) and **Sessions** are here too. |
 | **Benchmark** | Runs Strata's `strata_bench.py` against one or several models in turn, starting and stopping their servers, with live output. |
 | **Results** | Every benchmark run as a table (its MTP setting and draft acceptance, decode and prompt speed, time to first token, cache hits); compare two side by side. |
 | **Models** | Strata's model catalog with download size, disk and RAM needs against this PC, colour-coded by fit. **Install with setup...** downloads one; **Remove...** deletes an installed one ([details](setup.md#removing-models)). The **archive** keeps models on another drive without installing them ([below](#the-model-archive)). |
@@ -83,87 +83,63 @@ it also drafts from earlier repeats in the context (prompt lookup), which pays o
   `--suffix-draft`, `--lookup-chain`, `--mtp-max-t`, `--mtp-window`, `--mtp-hnorm`, `--mtp-q4` and
   `--mtp-draft-vocab`.
 
-## Cline
+## Coding with Continuous
 
-Strata never truncates a prompt: once a conversation outgrows the model's context, every request
-fails. Cline only compacts a conversation against the limit it was told. **Open Cline** therefore
-tells Cline a limit taken from what the running server reports (including a context extended with
-yarn), just under it (the **Headroom** setting: 2% by default, never under 4,096 tokens), and writes
-it everywhere Cline reads it, every time.
+**Open VS Code** (Launch tab) is the way to code against the local model. It uses
+[Continuous](https://github.com/b1tninja/continuous), the Continue fork, from the VS Code Marketplace
+(`b1tninja.continuous`). It:
 
-- Cline compacts at 90% of the limit in its model entry (fixed in its code), and skips automatic
-  compaction entirely for a custom model with no limit.
-- Cline CLI 3 estimates a prompt as its JSON characters / 3. On Qwen and a code session that runs
-  ~30% over the real count, so Cline compacts well before the window is full: told 471,859 of a
-  524,288-token (yarn x2) window, it compacted at 325,817 real tokens. It corrects an undercount by
-  itself (from the token count the server reports for each request), but not that overcount, so a
-  bigger headroom only compacts earlier still. At 2% the same session would compact at ~358K.
-- The older Cline counted ~chars/4 without correcting itself and sent prompts ~4-5% over what it
-  was told; raise **Headroom** if a version of Cline ever has a prompt refused as too long.
-- Cline re-imports its legacy `globalState.json` into `providers.json` at every start, so the limit is
-  written to `models.json`, `providers.json` and `globalState.json` on every launch.
-- The model entry's reply cap (`maxTokens`) is set to 32,768 tokens (a quarter of a smaller context) when it has none or
-  still has the 8,192 used before: Strata counts thinking in the cap, so 8,192 cut long thinking at about 6K tokens. A
-  cap you set yourself is kept.
-- Those files are written as plain UTF-8: Windows PowerShell 5.1 adds a byte-order mark that Node's
-  JSON parser rejects, and Cline then silently rebuilt its settings without any limit.
+1. installs Continuous when it is missing, with `code --install-extension b1tninja.continuous`. VS Code picks the
+   build for this PC and keeps it up to date from the Marketplace;
+2. writes `configs/strata.yaml` in Continuous's global folder: a config named **Strata** with two entries for the
+   selected model, a **plan** entry with the **Plan thinking** level and an **act** entry with the **Thinking** level
+   (sent as `reasoning_effort` in each request), tool use on, pictures on when the server reads them (its `/health`
+   says `images`; without `image_input` in the capabilities list Continuous turns them off), the server's real
+   context, and Qwen's thinking-mode sampling. The reply cap (`maxTokens`) is 32,768 tokens (a quarter of a smaller
+   context): Strata counts the thinking in it and ends thinking when a quarter is left, so an 8,192 cap stopped
+   `xhigh` plans at about 6K tokens. An **autocomplete** entry gives Tab the same server, over chat (Strata has no
+   `/v1/completions`) with thinking off (`chat_template_kwargs.enable_thinking: false`) and a `modelTimeout` of
+   1,000 ms, since the 150 ms default stops a completion at 375 ms and a cold Strata Tab request takes about a second;
+3. starts the server if it is not running, then opens VS Code in the **Project folder**.
 
-### Thinking in Plan and Act
+In Continuous, pick **Strata** in the configs dropdown, then the plan or act model. It loads every YAML file in
+`configs` beside your own `config.yaml`, which the launcher never touches. **Open Strata config** opens the file.
 
-Cline CLI 3 keeps one thinking level per session (`--thinking`): pressing Tab to switch between Plan and Act
-does not change it. Separate Plan and Act models and levels are a setting of Cline's VS Code extension
-("Use different models for Plan and Act", kept in `globalState.json`), which the CLI only reads when it migrates
-those settings. So the launcher opens two kinds of session:
+**Install dev build...** is for testing a build of the fork: it installs a `.vsix` you pick (a local
+`npm run package` in its `extensions\vscode`, or a CI artifact) over the Marketplace one, and saves nothing. The
+Marketplace version replaces it when a newer one comes out; uninstall it in VS Code to go back sooner.
 
-- **Open Cline** starts in Act mode with the **Thinking** level.
-- **Plan in Cline** starts in Plan mode (Cline's `--plan`) with the **Plan thinking** level (default `xhigh`).
+Continuous has its own settings and commands (`continuous.*`), so it sits beside upstream
+[Continue](https://github.com/continuedev/continue) without clashing. The fork's earlier extensions
+(`b1tninja.continued`, `b1tninja.continuing`) are replaced by it: when one is installed, Open VS Code offers to
+uninstall it, once each time the launcher runs. Your settings and `~/.continue` are kept.
 
-Strata passes `low` and `medium` to the model as they are; `high` and `xhigh` are both the model's top level.
-Measured on NVFP4 with 12 Python problems (checked on ~155 cases each): thinking off solved 11, low, medium and
+The global folder is `~/.continuous` (`CONTINUOUS_GLOBAL_DIR`, or the older `CONTINUE_GLOBAL_DIR`, moves it).
+Continuous's first start copies `~/.continue` there only when `~/.continuous` does not exist yet, so until then the
+launcher writes the file in `~/.continue`, and the copy carries it over along with your own config. Making
+`~/.continuous` first would skip that copy.
+
+### The Continuous CLI
+
+**Open Continuous CLI** runs Continuous in a terminal instead: its command line, `continuous`, has a full terminal UI
+with plan mode, task lists and steering. It writes the same `strata.yaml`, starts the server if needed, then opens a
+PowerShell window in the project folder running `continuous --config <that file>`.
+
+The Setup tab's **Continuous CLI** step installs it from the newest
+[release](https://github.com/b1tninja/continuous/releases): its `continuous-cli-<version>.tgz`, with `npm install -g`
+(the CLI is not on npm's registry). It needs Node.js 22 or newer, which the step installs first when it is missing.
+The step compares the installed version (`continuous --version`) with the newest release and offers **Update** when a
+newer one is out. Its command is `continuous`, not upstream's `cn`, so both can be installed.
+
+### Thinking levels
+
+The plan and act entries each carry their own level, so switching between them in Continuous changes how much the
+model thinks. Strata passes `low` and `medium` to the model as they are; `high` and `xhigh` are both the model's top
+level. Measured on NVFP4 with 12 Python problems (checked on ~155 cases each): thinking off solved 11, low, medium and
 xhigh all solved 12; low took about twice off's time, xhigh 5.6x low's, with one problem thinking for 135 s. So
 `low` (or `medium`) suits acting and `xhigh` planning.
 
-### VS Code with Continue
-
-**Open VS Code** (Launch tab) uses [Continuous](https://github.com/b1tninja/continuous), the Continue fork, from the
-VS Code Marketplace (`b1tninja.continuous`). It:
-
-1. installs Continuous when it is missing, with `code --install-extension b1tninja.continuous`. VS Code picks the
-   build for this PC and keeps it up to date from the Marketplace. **Extension VSIX** is optional: set it (a `.vsix`,
-   or a folder: its newest `continu*.vsix`) to install that package instead when it is missing or a different
-   build, such as a local build (`npm run package` in the fork's `extensions\vscode`) or a release's
-   `continuous-win32-x64-<version>.vsix` from the [releases](https://github.com/b1tninja/continuous/releases) on a PC
-   without the Marketplace. The extension and version are read from the package. When the Marketplace install
-   fails, an extension already installed is used: the fork's earlier `b1tninja.continued`, or upstream
-   [Continue](https://github.com/continuedev/continue) (`continue.continue`).
-
-   Continuous has its own settings and commands (`continuous.*`), so it sits beside upstream Continue without
-   clashing. The fork's earlier extensions (`b1tninja.continued`, `b1tninja.continuing`) share upstream's and are
-   replaced by Continuous: when one is installed, the launcher offers to uninstall it, once each time it runs.
-   Your settings and `~/.continue` are kept. When the launcher falls back to one of them and upstream is installed
-   too, the status line says they clash;
-2. writes `configs/strata.yaml` in the extension's global folder: a config named **Strata** with two entries for the selected model, a
-   **plan** entry with the **Plan thinking** level and an **act** entry with the **Thinking** level (sent as
-   `reasoning_effort` in each request), tool use on, pictures on when the server reads them (its `/health` says `images`; without `image_input`
-   in the capabilities list Continue turns them off), the server's real context, and Qwen's thinking-mode sampling.
-   The reply cap (`maxTokens`) is 32,768 tokens (a quarter of a smaller context): Strata counts the thinking in it and
-   ends thinking when a quarter is left, so the 8,192 cap used before stopped `xhigh` plans at about 6K tokens;
-   an **autocomplete** entry gives Tab the same server, over chat (Strata has no `/v1/completions`) with thinking off
-   (`chat_template_kwargs.enable_thinking: false`) and a `modelTimeout` of 1,000 ms, since Continue's 150 ms default
-   stops a completion at 375 ms and a cold Strata Tab request takes about a second. Tab needs the fork (2.4.1 or
-   later, with [#330](https://github.com/b1tninja/continuous/pull/330)), which gives Qwen 3.8 a prompt it can fill;
-   upstream Continue sends it CodeQwen's FIM tokens;
-3. starts the server if it is not running, then opens VS Code in the project folder.
-
-The global folder is `~/.continuous` for Continuous and `~/.continue` for upstream and the older fork
-(`CONTINUOUS_GLOBAL_DIR` or `CONTINUE_GLOBAL_DIR` move them). Continuous's first start copies `~/.continue` to
-`~/.continuous` only when `~/.continuous` does not exist yet, so until then the launcher writes the file in
-`~/.continue`, and the copy carries it over along with your own config. Making `~/.continuous` first would skip that
-copy.
-
-Both extensions load every YAML file in `configs` beside your own `config.yaml`, which the launcher never touches.
-Pick **Strata** in the configs dropdown, then the plan or act model. **Open Continue config** opens the file Open VS
-Code wrote last.
+### Tab and the conversation cache
 
 Strata serves one request at a time and keeps only conversations of at least `--conversation-cache-min-tokens` in its
 conversation cache (the bundled configs say 50,000). A Tab request replaces the conversation the engine holds, so with Tab
@@ -184,21 +160,7 @@ places. Parking also needs free RAM: the snapshot (834 MiB for that conversation
 (2,560 MiB). With about 2 GiB available, 4096 changed nothing: the engine log said `skip parking (physical RAM admission
 ...)` and every agent turn after a Tab request took over 4 s. The Monitor tab's **Conversation cache** card (or
 `/metrics`) shows parks and restores.
-To keep Tab off, disable the autocomplete model in Continue.
-
-**Open Continuous CLI** runs Continuous in a terminal instead: its command line, `continuous`, has a full terminal
-UI with plan mode, task lists and steering. It writes the same `strata.yaml` (in Continuous's global folder, by the
-rules above), starts the server if needed, then opens a PowerShell window in the project folder running
-`continuous --config <that file>`. The Setup tab's **Continuous CLI** step installs it: the npm package on the newest
-[release](https://github.com/b1tninja/continuous/releases) (`continuous-cli-<version>.tgz`), with
-`npm install -g`. It needs Node.js 22 or newer. Its command is `continuous`, not upstream's `cn`, so both can be
-installed.
-
-`cline-strata.ps1` does this on its own too, for use without the window:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File cline-strata.ps1 [-Model <id>] [-StrataBase http://127.0.0.1:8080] [-Thinking low] [-Plan]
-```
+To keep Tab off, disable the autocomplete model in Continuous.
 
 ## An uncensored variant (optional, not included)
 

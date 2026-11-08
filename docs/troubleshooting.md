@@ -21,14 +21,9 @@ it works. Strata's packages (NVIDIA's CUDA libraries among them) are several GB 
 **Strata says it is behind GitHub, or Update is missing.** A zip copy of Strata cannot update
 itself: install Git in the Setup tab, then **Make it updatable**.
 
-**Cline: "context window exceeded", or it never compacts.** Open Cline from Strata Launcher (or
-`cline-strata.ps1`) rather than on its own, so it is given the running server's real limit. Raise
-the **Headroom** setting if a long conversation still overflows. [Details](using.md#cline)
-
-**Cline compacts long before the context is full.** Expected, and not the launcher's limit: Cline
-compacts at 90% of the limit by its own estimate (characters / 3), which runs ~30% high on code with
-Qwen, so a 512K window compacts around 330-360K real tokens. The Headroom setting (2%) is already the
-smallest that is safe; the rest is Cline's estimate.
+**Continuous: "context window exceeded".** Open VS Code from Strata Launcher, and pick the **Strata** config,
+so Continuous is given the running server's real context. Press **Open VS Code** again after changing the
+context: the config is rewritten for the server as it runs now. [Details](using.md#coding-with-continuous)
 
 **Strata is slower than other people's results on the same card.** Open the **PC** tab: it flags RAM running below
 its rated speed (EXPO/XMP off), a graphics card on fewer PCIe lanes than it has (an M.2 drive sharing its slot),

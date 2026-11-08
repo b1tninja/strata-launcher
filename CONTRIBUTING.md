@@ -7,8 +7,6 @@ and 11 ship.
 ## Layout
 
 - `strata-launcher.ps1`: the whole app (window, tabs, setup steps).
-- `cline-strata.ps1`: opens Cline against a running Strata server; the app starts it, and it works
-  on its own.
 - `install.ps1`: the one-line installer (also `-Uninstall`); `strata-launcher-setup.cmd` runs it for
   people who would rather double-click.
 - `assets/`: the logo, the icon and `make-icons.ps1`, which draws them.
@@ -16,7 +14,7 @@ and 11 ship.
 ## Tests
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tests\context-tests.ps1   # Cline limits, contexts, rope scaling
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\context-tests.ps1   # contexts, rope scaling, the Continuous config
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\session-tests.ps1   # session files, stopping servers
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\check-paths.ps1     # shortcuts, no machine paths, no hidden code
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\sandbox\run-sandbox.ps1 [-Local]
@@ -25,7 +23,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\sandbox\run-sandbox.ps
 The last one is the **first-time-user test**. In Windows Sandbox (a clean Windows with no winget,
 Git, Python, Node.js or graphics driver) it installs Strata Launcher with the setup file, goes
 through the first start, downloads Strata, installs Git, runs the PC check (Python through uv),
-makes Strata updatable, installs Node.js and Cline, sets up winget, removes a stand-in model and
+makes Strata updatable, installs Node.js and the Continuous CLI, sets up winget, removes a stand-in model and
 uninstalls through the Settings › Apps entry, checking each step and saving
 a log and screenshots (`window-setup.png` is the README's screenshot). Without `-Local` it installs
 from GitHub's `main`, so push first; `-Local` uses your working copy. While it runs,
@@ -53,7 +51,7 @@ Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM
   `.venv` Python, shows that plan, and has Strata carry it out.
 - Every setup window records how it ended (`ok`, or `failed:` with the reason or exit code), so the
   Setup tab reports a failed step at once instead of waiting on it.
-- Files Node reads (Cline's settings) are written as UTF-8 without a byte-order mark; scripts
+- Files Node reads (Continuous's `strata.yaml`) are written as UTF-8 without a byte-order mark; scripts
   Windows PowerShell runs are written with one, so it reads them as UTF-8.
 - Quoted paths handed to child processes are escaped so a trailing `\` can't swallow the closing
   quote (`QPath`).
