@@ -277,6 +277,9 @@ Assert-Is ($ctext -match 'apiBase: http://127\.0\.0\.1:8083/v1' -and $ctext -mat
 Assert-Is ($ctext -match 'maxTokens: 32768') $true 'answer cap with room for xhigh thinking'
 Assert-Is ((Get-ContinueConfigText $crow 65536 '' 'low') -match 'maxTokens: 16384') $true 'a quarter of a small context'
 Assert-Is ((Get-ContinueConfigText $crow 1000 '' 'low') -match '(?s)- plan\s*\n.*?\n  - name') $true 'no level: no thinking suffix and no requestOptions'
+Assert-Is ($ctext -match '(?s)  - name: Strata qwen3\.8-flash-next-nvfp4-nvfp4 - autocomplete\s*\n.*roles: \[autocomplete\]') $true 'an autocomplete entry'
+Assert-Is ($ctext -match 'useLegacyCompletionsEndpoint: false' -and $ctext -match 'enable_thinking: false' -and $ctext -match 'modelTimeout: 1000') $true 'Tab over chat, no thinking, a timeout that fits'
+Assert-Is (@($ctext -split "`n" | Where-Object { $_ -match 'roles: \[autocomplete\]' }).Count) 1 'only the Tab entry autocompletes'
 Assert-Is ($ctext -match '[^\x00-\x7F]') $false 'plain ASCII'
 $vdir = Join-Path $env:TEMP "vsix-test-$PID"; New-Item -ItemType Directory -Force $vdir | Out-Null
 try {

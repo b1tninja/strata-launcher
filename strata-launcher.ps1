@@ -365,7 +365,7 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
                       ToolTip="Installs the VSIX when Continue is missing or older, writes ~/.continue/configs/strata.yaml for the selected model (a plan entry with the Plan thinking level and an act entry with the Thinking level), starts the server if needed, then opens VS Code in the project folder."/>
               <Button x:Name="ContinueCfgBtn" Content="Open Continue config"/>
             </StackPanel>
-            <TextBlock x:Name="VsCodeHint" Style="{StaticResource Hint}" Text="In Continue, pick the &quot;Strata&quot; config in the configs dropdown, then the plan or act model."/>
+            <TextBlock x:Name="VsCodeHint" Style="{StaticResource Hint}" Text="In Continue, pick the &quot;Strata&quot; config in the configs dropdown, then the plan or act model. Tab autocomplete uses the same server."/>
           </StackPanel>
           </ScrollViewer>
         </TabItem>
@@ -1363,6 +1363,24 @@ function Get-ContinueConfigText($Row, [int]$Context, [string]$PlanEffort, [strin
         }
         $lines -join "`n"
     }
+    # Tab: the same server over chat (Strata has no /v1/completions; useLegacyCompletionsEndpoint false skips the
+    # attempt), thinking off through the chat template, and a modelTimeout that fits: Continue's 150 ms default stops a
+    # completion at 2.5 times that, and a cold Strata Tab request took ~1 s. The temperature is Continue's own 0.01.
+    $tab = @(
+        "  - name: Strata $($Row.Model) - autocomplete",
+        "    provider: openai",
+        "    model: $($Row.Model)",
+        "    apiBase: $base",
+        "    apiKey: strata",
+        "    roles: [autocomplete]",
+        "    env:",
+        "      useLegacyCompletionsEndpoint: false",
+        "    autocompleteOptions:",
+        "      modelTimeout: 1000",
+        "    requestOptions:",
+        "      extraBodyProperties:",
+        "        chat_template_kwargs:",
+        "          enable_thinking: false") -join "`n"
     @(
         '# Written by Strata Launcher (Open VS Code) for the selected model; rewritten on every launch.',
         '# Your own ~/.continue/config.yaml is not touched. Pick "Strata" in Continue''s configs dropdown.',
@@ -1371,7 +1389,8 @@ function Get-ContinueConfigText($Row, [int]$Context, [string]$PlanEffort, [strin
         'schema: v1',
         'models:',
         (& $entry 'plan' $PlanEffort),
-        (& $entry 'act' $ActEffort)
+        (& $entry 'act' $ActEffort),
+        $tab
     ) -join "`n"
 }
 

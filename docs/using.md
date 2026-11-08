@@ -140,11 +140,24 @@ It:
    `reasoning_effort` in each request), tool use on, the server's real context, and Qwen's thinking-mode sampling.
    The reply cap (`maxTokens`) is 32,768 tokens (a quarter of a smaller context): Strata counts the thinking in it and
    ends thinking when a quarter is left, so the 8,192 cap used before stopped `xhigh` plans at about 6K tokens;
+   an **autocomplete** entry gives Tab the same server, over chat (Strata has no `/v1/completions`) with thinking off
+   (`chat_template_kwargs.enable_thinking: false`) and a `modelTimeout` of 1,000 ms, since Continue's 150 ms default
+   stops a completion at 375 ms and a cold Strata Tab request takes about a second. Tab needs the continued fork
+   (0.1.x after [#330](https://github.com/b1tninja/continued/pull/330)), which gives Qwen 3.8 a prompt it can fill;
+   upstream Continue sends it CodeQwen's FIM tokens;
 3. starts the server if it is not running, then opens VS Code in the project folder.
 
 Continue loads every YAML file in `~/.continue/configs` beside your own `config.yaml`, which the launcher never
 touches. In Continue, pick **Strata** in the configs dropdown, then the plan or act model. **Open Continue config**
 opens the file.
+
+Strata serves one request at a time and keeps only conversations of at least `--conversation-cache-min-tokens` in its
+conversation cache (the bundled configs say 50,000). A Tab request replaces the conversation the engine holds, so with Tab
+on, an agent conversation under that size is read again on its next turn: measured on qwen3.8-flash-next-nvfp4, an
+18,609-token conversation took 0.22 s cached and 3.9 s after one Tab request, while a 74,210-token one stayed cached
+(0.45 s). Tab prompts are under about 2,000 tokens, so a lower `--conversation-cache-min-tokens` (such as 4096, in
+**Extra args** or the config) keeps agent conversations while Tab prompts stay out of the cache; that setting is not
+measured yet. To keep Tab off, disable the autocomplete model in Continue.
 
 `cline-strata.ps1` does this on its own too, for use without the window:
 
