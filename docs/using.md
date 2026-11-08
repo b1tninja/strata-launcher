@@ -155,9 +155,13 @@ Strata serves one request at a time and keeps only conversations of at least `--
 conversation cache (the bundled configs say 50,000). A Tab request replaces the conversation the engine holds, so with Tab
 on, an agent conversation under that size is read again on its next turn: measured on qwen3.8-flash-next-nvfp4, an
 18,609-token conversation took 0.22 s cached and 3.9 s after one Tab request, while a 74,210-token one stayed cached
-(0.45 s). Tab prompts are under about 2,000 tokens, so a lower `--conversation-cache-min-tokens` (such as 4096, in
-**Extra args** or the config) keeps agent conversations while Tab prompts stay out of the cache; that setting is not
-measured yet. To keep Tab off, disable the autocomplete model in Continue.
+(0.45 s). Tab prompts are about 2,000 tokens (1,992 measured), so a lower `--conversation-cache-min-tokens` (such as
+4096, in **Extra args** or the config) lets Strata park agent conversations while Tab prompts stay out. Parking also needs
+free RAM: the snapshot (834 MiB for that conversation) plus `--conversation-cache-min-free-mib` (2,560 MiB). On a PC with
+about 2 GiB available, 4096 changed nothing: the engine log said `skip parking (physical RAM admission ...)` and every agent
+turn after a Tab request took 4.1 to 4.4 s instead of 0.38 s. Whether 4096 helps with enough RAM free is not measured yet;
+the Monitor tab's **Conversation cache** card (or `/metrics`) shows parks and restores.
+To keep Tab off, disable the autocomplete model in Continue.
 
 `cline-strata.ps1` does this on its own too, for use without the window:
 
