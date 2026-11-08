@@ -9,7 +9,7 @@ catalog entry's figure. Select one to launch it, or several to benchmark them in
 
 | Tab | |
 | --- | --- |
-| **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve, [MTP drafting and its depth](#mtp-speculative-decoding) and more; your config files are never changed. **Remove model...** deletes a model's files and config ([details](setup.md#removing-models)). **Sessions**, **Open Cline**, **Plan in Cline** and **Open VS Code** (with Continue) are here too (below). |
+| **Launch** | Start and stop the selected model's server (only that one), open the web chat, the engine log (a built-in viewer with live follow) or the config. Per-launch overrides for the context (with the rope scaling longer contexts need), the VRAM reserve, [MTP drafting and its depth](#mtp-speculative-decoding) and more; your config files are never changed. **Remove model...** deletes a model's files and config ([details](setup.md#removing-models)). **Sessions**, **Open Cline**, **Plan in Cline**, **Open VS Code** (with Continue) and **Open Continuous CLI** are here too (below). |
 | **Benchmark** | Runs Strata's `strata_bench.py` against one or several models in turn, starting and stopping their servers, with live output. |
 | **Results** | Every benchmark run as a table (its MTP setting and draft acceptance, decode and prompt speed, time to first token, cache hits); compare two side by side. |
 | **Models** | Strata's model catalog with download size, disk and RAM needs against this PC, colour-coded by fit. **Install with setup...** downloads one; **Remove...** deletes an installed one ([details](setup.md#removing-models)). The **archive** keeps models on another drive without installing them ([below](#the-model-archive)). |
@@ -125,17 +125,19 @@ xhigh all solved 12; low took about twice off's time, xhigh 5.6x low's, with one
 
 ### VS Code with Continue
 
-**Open VS Code** (Launch tab) uses the [Continue](https://github.com/continuedev/continue) extension, or a build of
-the [continued](https://github.com/b1tninja/continued) fork: its CI's `win32-x64-vsix` artifact
-(`gh run download <run> -R b1tninja/continued -n win32-x64-vsix`), or `npm run package` in its `extensions\vscode`.
-It:
+**Open VS Code** (Launch tab) uses [Continuous](https://github.com/b1tninja/continuous), the Continue fork (called
+continued before 2.4.2), or upstream [Continue](https://github.com/continuedev/continue). Continuous is on the fork's
+[releases](https://github.com/b1tninja/continuous/releases) (`continuous-win32-x64-<version>.vsix`), or
+`npm run package` in its `extensions\vscode` builds one. It:
 
-1. installs the package from **Extension VSIX** (a `.vsix`, or a folder: its newest `continue*.vsix`) when that
+1. installs the package from **Extension VSIX** (a `.vsix`, or a folder: its newest `continu*.vsix`) when that
    extension is missing or a different build, with `code --install-extension --force`. The extension and version are
-   read from the package: the fork is its own extension (`b1tninja.continued`), so it installs beside upstream's
-   (`continue.continue`) rather than over it. With both installed, the status line says so: disable one in VS Code,
-   as they add the same views and commands;
-2. writes `~/.continue/configs/strata.yaml`: a config named **Strata** with two entries for the selected model, a
+   read from the package. Continuous is its own extension (`b1tninja.continuous`) with its own settings and commands
+   (`continuous.*`), so it installs beside upstream's (`continue.continue`) without clashing. The older fork
+   (`b1tninja.continued`) and upstream share theirs: with both installed, the status line says so, and you disable
+   one in VS Code. With no package picked, it uses the first of `b1tninja.continuous`, `b1tninja.continued` and
+   `continue.continue` that is installed;
+2. writes `configs/strata.yaml` in the extension's global folder: a config named **Strata** with two entries for the selected model, a
    **plan** entry with the **Plan thinking** level and an **act** entry with the **Thinking** level (sent as
    `reasoning_effort` in each request), tool use on, pictures on when the server reads them (its `/health` says `images`; without `image_input`
    in the capabilities list Continue turns them off), the server's real context, and Qwen's thinking-mode sampling.
@@ -143,14 +145,20 @@ It:
    ends thinking when a quarter is left, so the 8,192 cap used before stopped `xhigh` plans at about 6K tokens;
    an **autocomplete** entry gives Tab the same server, over chat (Strata has no `/v1/completions`) with thinking off
    (`chat_template_kwargs.enable_thinking: false`) and a `modelTimeout` of 1,000 ms, since Continue's 150 ms default
-   stops a completion at 375 ms and a cold Strata Tab request takes about a second. Tab needs the continued fork
-   (0.1.x after [#330](https://github.com/b1tninja/continued/pull/330)), which gives Qwen 3.8 a prompt it can fill;
+   stops a completion at 375 ms and a cold Strata Tab request takes about a second. Tab needs the fork (2.4.1 or
+   later, with [#330](https://github.com/b1tninja/continuous/pull/330)), which gives Qwen 3.8 a prompt it can fill;
    upstream Continue sends it CodeQwen's FIM tokens;
 3. starts the server if it is not running, then opens VS Code in the project folder.
 
-Continue loads every YAML file in `~/.continue/configs` beside your own `config.yaml`, which the launcher never
-touches. In Continue, pick **Strata** in the configs dropdown, then the plan or act model. **Open Continue config**
-opens the file.
+The global folder is `~/.continuous` for Continuous and `~/.continue` for upstream and the older fork
+(`CONTINUOUS_GLOBAL_DIR` or `CONTINUE_GLOBAL_DIR` move them). Continuous's first start copies `~/.continue` to
+`~/.continuous` only when `~/.continuous` does not exist yet, so until then the launcher writes the file in
+`~/.continue`, and the copy carries it over along with your own config. Making `~/.continuous` first would skip that
+copy.
+
+Both extensions load every YAML file in `configs` beside your own `config.yaml`, which the launcher never touches.
+Pick **Strata** in the configs dropdown, then the plan or act model. **Open Continue config** opens the file Open VS
+Code wrote last.
 
 Strata serves one request at a time and keeps only conversations of at least `--conversation-cache-min-tokens` in its
 conversation cache (the bundled configs say 50,000). A Tab request replaces the conversation the engine holds, so with Tab
@@ -172,6 +180,14 @@ places. Parking also needs free RAM: the snapshot (834 MiB for that conversation
 ...)` and every agent turn after a Tab request took over 4 s. The Monitor tab's **Conversation cache** card (or
 `/metrics`) shows parks and restores.
 To keep Tab off, disable the autocomplete model in Continue.
+
+**Open Continuous CLI** runs Continuous in a terminal instead: its command line, `continuous`, has a full terminal
+UI with plan mode, task lists and steering. It writes the same `strata.yaml` (in Continuous's global folder, by the
+rules above), starts the server if needed, then opens a PowerShell window in the project folder running
+`continuous --config <that file>`. The Setup tab's **Continuous CLI** step installs it: the npm package on the newest
+[release](https://github.com/b1tninja/continuous/releases) (`continuous-cli-<version>.tgz`), with
+`npm install -g`. It needs Node.js 22 or newer. Its command is `continuous`, not upstream's `cn`, so both can be
+installed.
 
 `cline-strata.ps1` does this on its own too, for use without the window:
 
