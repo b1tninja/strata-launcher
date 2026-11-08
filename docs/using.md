@@ -125,18 +125,23 @@ xhigh all solved 12; low took about twice off's time, xhigh 5.6x low's, with one
 
 ### VS Code with Continue
 
-**Open VS Code** (Launch tab) uses [Continuous](https://github.com/b1tninja/continuous), the Continue fork (called
-continued before 2.4.2), or upstream [Continue](https://github.com/continuedev/continue). Continuous is on the fork's
-[releases](https://github.com/b1tninja/continuous/releases) (`continuous-win32-x64-<version>.vsix`), or
-`npm run package` in its `extensions\vscode` builds one. It:
+**Open VS Code** (Launch tab) uses [Continuous](https://github.com/b1tninja/continuous), the Continue fork, from the
+VS Code Marketplace (`b1tninja.continuous`). It:
 
-1. installs the package from **Extension VSIX** (a `.vsix`, or a folder: its newest `continu*.vsix`) when that
-   extension is missing or a different build, with `code --install-extension --force`. The extension and version are
-   read from the package. Continuous is its own extension (`b1tninja.continuous`) with its own settings and commands
-   (`continuous.*`), so it installs beside upstream's (`continue.continue`) without clashing. The older fork
-   (`b1tninja.continued`) and upstream share theirs: with both installed, the status line says so, and you disable
-   one in VS Code. With no package picked, it uses the first of `b1tninja.continuous`, `b1tninja.continued` and
-   `continue.continue` that is installed;
+1. installs Continuous when it is missing, with `code --install-extension b1tninja.continuous`. VS Code picks the
+   build for this PC and keeps it up to date from the Marketplace. **Extension VSIX** is optional: set it (a `.vsix`,
+   or a folder: its newest `continu*.vsix`) to install that package instead when it is missing or a different
+   build, such as a local build (`npm run package` in the fork's `extensions\vscode`) or a release's
+   `continuous-win32-x64-<version>.vsix` from the [releases](https://github.com/b1tninja/continuous/releases) on a PC
+   without the Marketplace. The extension and version are read from the package. When the Marketplace install
+   fails, an extension already installed is used: the fork's earlier `b1tninja.continued`, or upstream
+   [Continue](https://github.com/continuedev/continue) (`continue.continue`).
+
+   Continuous has its own settings and commands (`continuous.*`), so it sits beside upstream Continue without
+   clashing. The fork's earlier extensions (`b1tninja.continued`, `b1tninja.continuing`) share upstream's and are
+   replaced by Continuous: when one is installed, the launcher offers to uninstall it, once each time it runs.
+   Your settings and `~/.continue` are kept. When the launcher falls back to one of them and upstream is installed
+   too, the status line says they clash;
 2. writes `configs/strata.yaml` in the extension's global folder: a config named **Strata** with two entries for the selected model, a
    **plan** entry with the **Plan thinking** level and an **act** entry with the **Thinking** level (sent as
    `reasoning_effort` in each request), tool use on, pictures on when the server reads them (its `/health` says `images`; without `image_input`

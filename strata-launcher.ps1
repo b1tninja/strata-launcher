@@ -357,12 +357,12 @@ if ($StrataRoot) { $settings.StrataRoot = Clean-Path $StrataRoot }
               </Grid.ColumnDefinitions>
               <TextBlock Text="Extension VSIX" Style="{StaticResource Label}"/>
               <TextBox Grid.Column="1" x:Name="VsixBox"
-                       ToolTip="The extension package to install: a .vsix file, or a folder (the newest continu*.vsix in it is used). Continuous, the Continue fork, is on its GitHub releases (continuous-win32-x64-*.vsix), or npm run package in its extensions\vscode builds one into extensions\vscode\build."/>
+                       ToolTip="Optional. Leave it empty to install Continuous from the VS Code Marketplace, which keeps it up to date. Set it to install a package instead: a .vsix file, or a folder (the newest continu*.vsix in it is used), such as a local build (npm run package in the fork's extensions\vscode) or a release's continuous-win32-x64-*.vsix for a PC without the Marketplace."/>
               <Button Grid.Column="2" x:Name="VsixBrowse" Content="Browse..." Margin="8,0,0,0"/>
             </Grid>
             <StackPanel Orientation="Horizontal" Margin="110,4,0,0">
               <Button x:Name="VsCodeBtn" Content="Open VS Code" FontWeight="SemiBold" Margin="0,0,8,0"
-                      ToolTip="Installs the VSIX when Continue is missing or older, writes configs/strata.yaml in ~/.continuous (Continuous) or ~/.continue for the selected model (a plan entry with the Plan thinking level and an act entry with the Thinking level), starts the server if needed, then opens VS Code in the project folder."/>
+                      ToolTip="Installs Continuous from the VS Code Marketplace when it is missing (or the Extension VSIX, when set), writes configs/strata.yaml in ~/.continuous (Continuous) or ~/.continue for the selected model (a plan entry with the Plan thinking level and an act entry with the Thinking level), starts the server if needed, then opens VS Code in the project folder."/>
               <Button x:Name="ContinuousCliBtn" Content="Open Continuous CLI" Margin="0,0,8,0"
                       ToolTip="Continuous in a terminal (its terminal UI, the command continuous): writes the same strata.yaml, starts the server if needed, then opens a PowerShell window in the project folder running continuous --config on it. The Setup tab's Continuous CLI step installs it."/>
               <Button x:Name="ContinueCfgBtn" Content="Open Continue config"/>
@@ -1292,6 +1292,7 @@ function Start-Cline($Row, [switch]$Plan) {
 # wrote last.
 $ContinuousIds = @('b1tninja.continuous')
 $ContinueIds = @('b1tninja.continuous', 'b1tninja.continued', 'continue.continue')   # preferred first
+$OldForkIds = @('b1tninja.continued', 'b1tninja.continuing')   # the fork's earlier IDs: Continuous replaces them
 function Get-ContinueGlobalDir([string]$Id) {
     $old = Join-Path $env:USERPROFILE '.continue'
     if ($ContinuousIds -notcontains $Id) { if ($env:CONTINUE_GLOBAL_DIR) { return $env:CONTINUE_GLOBAL_DIR }; return $old }
@@ -1462,26 +1463,49 @@ function Start-VsCode($Row) {
     $folder = Clean-Path $ui.FolderBox.Text
     $raw = Get-RowContext $Row
     if ($raw -le 0) { Set-Status "Cannot tell $($Row.Model)'s context; VS Code was not opened."; return }
-    # Continue: install the package when that extension is missing or a different build. The fork is its own
-    # extension (b1tninja.continuous; b1tninja.continued before 2.4.2), so upstream's (continue.continue) is left
-    # alone. The older two are flagged when installed beside it: they add the same views and commands. Continuous's
-    # settings and commands are its own (continuous.*), so it does not clash with them.
+    # The extension: Continuous (b1tninja.continuous) from the VS Code Marketplace, which then keeps it up to date.
+    # Extension VSIX, when set, installs that package instead (a local build, or offline). Upstream Continue
+    # (continue.continue) is left alone: Continuous's settings and commands are its own (continuous.*), so the two
+    # do not clash. The fork's earlier IDs do clash with upstream, and Continuous replaces them: the launcher offers
+    # to uninstall them, once per run.
     $vsix = Get-ContinueVsix (Clean-Path $ui.VsixBox.Text)
     $exts = Get-InstalledExtensions $code
-    $id = if ($vsix) { $vsix.Id.ToLower() } else { @($ContinueIds | Where-Object { $exts[$_] }) + 'continue.continue' | Select-Object -First 1 }
+    $id = if ($vsix) { $vsix.Id.ToLower() } else { $ContinuousIds[0] }
     $have = $exts[$id]
-    if ($vsix -and $have -ne $vsix.Version) {
-        Set-Status "Installing $($vsix.Id) $($vsix.Version) from $($vsix.Path)..."
+    $install = { param($what, $label)
+        Set-Status "Installing $label..."
         $window.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)   # show it first
-        $out = Invoke-CodeCli $code "--install-extension $(QPath $vsix.Path) --force"
-        $have = (Get-InstalledExtensions $code)[$id]
-        if (-not $have) { [System.Windows.MessageBox]::Show("$($vsix.Id) did not install:`n`n$out", 'Strata') | Out-Null; return }
+        $out = Invoke-CodeCli $code "--install-extension $what --force"
+        $script:installOut = $out
+        (Get-InstalledExtensions $code)[$id] }
+    if ($vsix -and $have -ne $vsix.Version) {
+        $have = & $install (QPath $vsix.Path) "$($vsix.Id) $($vsix.Version) from $($vsix.Path)"
+        if (-not $have) { [System.Windows.MessageBox]::Show("$($vsix.Id) did not install:`n`n$($script:installOut)", 'Strata') | Out-Null; return }
     } elseif (-not $have) {
-        Set-Status 'Neither Continuous nor Continue is installed and no VSIX was found: get one from github.com/b1tninja/continuous/releases (or npm run package in its extensions\vscode) and pick it.'
-        return
+        $have = & $install $id "Continuous ($id) from the VS Code Marketplace"
+        if (-not $have) {
+            # offline, or the Marketplace refused: an extension already here still works
+            $fallback = @($ContinueIds | Where-Object { $exts[$_] }) | Select-Object -First 1
+            if (-not $fallback) {
+                [System.Windows.MessageBox]::Show("Continuous ($id) did not install from the VS Code Marketplace:`n`n$($script:installOut)`n`nWithout the Marketplace, pick its .vsix from github.com/$ContinuousRepo/releases in Extension VSIX.", 'Strata') | Out-Null
+                return
+            }
+            $id = $fallback; $have = $exts[$id]
+        }
+        $exts = Get-InstalledExtensions $code
+    }
+    $old = @($OldForkIds | Where-Object { $_ -ne $id -and $exts[$_] })
+    if ($old -and $ContinuousIds -contains $id -and -not $script:askedOldForks) {
+        $script:askedOldForks = $true
+        $q = "$($old -join ' and ') $(if ($old.Count -gt 1) { 'are' } else { 'is' }) installed: the fork's earlier extension, which Continuous replaces. Uninstall $(if ($old.Count -gt 1) { 'them' } else { 'it' }) from VS Code?`n`n" +
+             'Your settings and ~/.continue are kept: Continuous copies them on its first start.'
+        if ([System.Windows.MessageBox]::Show($q, 'Strata', 'YesNo') -eq 'Yes') {
+            foreach ($o in $old) { [void](Invoke-CodeCli $code "--uninstall-extension $o" 60) }
+            $exts = Get-InstalledExtensions $code
+        }
     }
     $other = if ($ContinuousIds -contains $id) { @() } else {
-        @('continue.continue', 'b1tninja.continued') | Where-Object { $_ -ne $id -and $exts[$_] } }
+        @('continue.continue') + $OldForkIds | Where-Object { $_ -ne $id -and $exts[$_] } }
     $cfg = Write-ContinueConfig $Row $id $raw
     Start-Process -FilePath $code -ArgumentList (QPath $folder) -WindowStyle Hidden
     $warn = if ($other) { " $($other -join ', ') is installed too: disable it in VS Code, they clash." } else { '' }

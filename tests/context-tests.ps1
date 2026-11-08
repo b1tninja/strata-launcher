@@ -311,6 +311,63 @@ try {
     Assert-Is (Get-ContinueVsix (Join-Path $vdir 'missing')) $null 'nothing there'
 } finally { Remove-Item -LiteralPath $vdir -Recurse -Force -ErrorAction SilentlyContinue }
 
+Write-Host '--- Open VS Code: which extension'
+# A fake code.cmd: --list-extensions prints exts.txt, --install-extension adds a line, --uninstall-extension removes it.
+Invoke-Expression (Get-FunctionText $gui @('Invoke-CodeCli', 'Get-InstalledExtensions', 'Start-VsCode'))
+$ContinuousIds = @('b1tninja.continuous'); $ContinueIds = @('b1tninja.continuous', 'b1tninja.continued', 'continue.continue')
+$OldForkIds = @('b1tninja.continued', 'b1tninja.continuing'); $ContinuousRepo = 'b1tninja/continuous'
+$cdir = Join-Path $env:TEMP "code-test-$PID"; New-Item -ItemType Directory -Force $cdir | Out-Null
+try {
+    $state = Join-Path $cdir 'exts.txt'; $calls = Join-Path $cdir 'calls.txt'
+    $fake = Join-Path $cdir 'code.ps1'
+    Set-Content -LiteralPath $fake -Value @'
+param([Parameter(ValueFromRemainingArguments)]$a)
+if ("$($a[0])" -notlike '--*') { exit }   # opening the folder runs in the background: it touches no file
+$dir = Split-Path -Parent $PSCommandPath; $state = Join-Path $dir 'exts.txt'
+Add-Content -LiteralPath (Join-Path $dir 'calls.txt') -Value ($a -join ' ')
+$list = @(Get-Content -LiteralPath $state -ErrorAction SilentlyContinue | Where-Object { $_ })
+switch ($a[0]) {
+    '--list-extensions' { $list }
+    '--install-extension' { if ($a[1] -notmatch 'offline') { Set-Content -LiteralPath $state -Value (@($list) + "$($a[1])@2.4.4") } else { 'Failed: offline' } }
+    '--uninstall-extension' { Set-Content -LiteralPath $state -Value @($list | Where-Object { $_ -notlike "$($a[1])@*" }) }
+}
+'@
+    $code = Join-Path $cdir 'code.cmd'
+    Set-Content -LiteralPath $code -Value "@powershell -NoProfile -ExecutionPolicy Bypass -File `"$fake`" %*"
+    Add-Type -AssemblyName WindowsBase
+  & {   # a child scope: the stubs below go away with it
+    function Get-CodeCommand { $code }
+    function Clean-Path($p) { $p }
+    function QPath($p) { "`"$p`"" }
+    function Get-RowContext($r) { 262144 }
+    function Get-ContinueVsix($p) { $null }
+    function Write-ContinueConfig($r, $i, $c) { $script:wroteFor = $i; 'cfg' }
+    function Set-Status($t) { $script:lastStatus = $t }
+    $ui = @{ FolderBox = @{ Text = $cdir }; VsixBox = @{ Text = '' } }
+    $window = [pscustomobject]@{ Dispatcher = ([pscustomobject]@{} | Add-Member -PassThru -MemberType ScriptMethod -Name Invoke -Value { param($a, $b) }) }
+    $vrow = [pscustomobject]@{ Model = 'm'; Port = 8083 }
+
+    Set-Content -LiteralPath $state -Value ''
+    Start-VsCode $vrow
+    Assert-Is $script:wroteFor 'b1tninja.continuous' 'nothing installed: Continuous'
+    Assert-Is ((Get-Content $state) -contains 'b1tninja.continuous@2.4.4') $true 'installed from the Marketplace by its ID'
+    Assert-Is ($script:lastStatus -match 'with b1tninja\.continuous 2\.4\.4') $true 'the status names it'
+
+    Set-Content -LiteralPath $calls -Value ''
+    Start-VsCode $vrow
+    Assert-Is (@(Get-Content $calls | Where-Object { $_ -match 'install-extension' }).Count) 0 'installed already: not installed again'
+
+    Set-Content -LiteralPath $state -Value 'continue.continue@1.3.40'
+    $script:askedOldForks = $true
+    $ContinuousIds = @('b1tninja.continuous-offline'); $ContinueIds = @('b1tninja.continuous-offline', 'b1tninja.continued', 'continue.continue')
+    Start-VsCode $vrow
+    Assert-Is $script:wroteFor 'continue.continue' 'the Marketplace fails: an installed upstream Continue is used'
+  }
+} finally {
+    Start-Sleep -Milliseconds 500   # the fake code.cmd that "opened" the folder
+    Remove-Item -LiteralPath $cdir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host '--- Continue global folder'
 Invoke-Expression (Get-FunctionText $gui @('Get-ContinueGlobalDir', 'Get-ContinueConfigPath'))
 $ContinuousIds = @('b1tninja.continuous')
