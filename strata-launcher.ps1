@@ -1262,12 +1262,14 @@ function Get-ContinueConfigText($Row, [int]$Context, [string]$PlanEffort, [strin
     # Two entries for the same server: plan (more thinking) and act (less). Strata takes reasoning_effort in the request
     # body (high and xhigh are the model's top level, none is no thinking); sampling is Qwen's for thinking mode.
     # maxTokens counts the thinking too: Strata ends thinking when a quarter of it is left, so 8192 stopped xhigh plans at
-    # ~6K tokens. Continue keeps only min(1000, maxTokens) of the context free for the answer, so a big cap costs nothing.
+    # ~6K tokens, and tool calls can need ~128K (a truncated file edit is bad): 131072, at most half a smaller context.
+    # The IDE keeps only min(1000, maxTokens) of the context free for the answer, so a big cap costs it nothing; the CLI
+    # budgets contextLength - maxTokens, which is why it stays under half.
     # A capabilities list is all Continue goes by, so image_input must be in it when the server reads images (its
     # /health "images"); without it Continue turns pictures off even though Strata takes them.
     $base = "$(Get-BaseUrl $Row)/v1"
     $caps = if ($Images) { '[tool_use, image_input]' } else { '[tool_use]' }
-    $maxOut = [Math]::Max(4096, [Math]::Min(32768, [int]($Context / 4)))
+    $maxOut = [Math]::Max(4096, [Math]::Min(131072, [int]($Context / 2)))
     $entry = {
         param($label, $effort)
         $lines = @(

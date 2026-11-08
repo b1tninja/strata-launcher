@@ -95,9 +95,9 @@ it also drafts from earlier repeats in the context (prompt lookup), which pays o
    selected model, a **plan** entry with the **Plan thinking** level and an **act** entry with the **Thinking** level
    (sent as `reasoning_effort` in each request), tool use on, pictures on when the server reads them (its `/health`
    says `images`; without `image_input` in the capabilities list Continuous turns them off), the server's real
-   context, and Qwen's thinking-mode sampling. The reply cap (`maxTokens`) is 32,768 tokens (a quarter of a smaller
-   context): Strata counts the thinking in it and ends thinking when a quarter is left, so an 8,192 cap stopped
-   `xhigh` plans at about 6K tokens. An **autocomplete** entry gives Tab the same server, over chat (Strata has no
+   context, and Qwen's thinking-mode sampling. The reply cap (`maxTokens`) is 131,072 tokens (half of a smaller
+   context), since tool calls can need about 128K and a truncated file edit is bad. Strata counts the thinking in it
+   and ends thinking when a quarter is left, so an 8,192 cap stopped `xhigh` plans at about 6K tokens. An **autocomplete** entry gives Tab the same server, over chat (Strata has no
    `/v1/completions`) with thinking off (`chat_template_kwargs.enable_thinking: false`) and a `modelTimeout` of
    1,000 ms, since the 150 ms default stops a completion at 375 ms and a cold Strata Tab request takes about a second;
 3. starts the server if it is not running, then opens VS Code in the **Project folder**.
